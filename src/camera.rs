@@ -126,5 +126,6 @@ impl CameraController {
             camera.eye += displacement;
             camera.target += displacement;
         }
+        camera.zoom = self.zoom_target;
     }
 }
