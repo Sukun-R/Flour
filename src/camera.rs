@@ -58,8 +58,6 @@ pub struct CameraController {
     pub is_right_pressed: bool,
     pub zoom_target: f32,
     pub zoom_smoother: Smoother,
-    pub x_smoother: Smoother,
-    pub y_smoother: Smoother,
 }
 
 impl CameraController {
@@ -72,8 +70,6 @@ impl CameraController {
             is_right_pressed: false,
             zoom_target: 1.0,
             zoom_smoother: Smoother::new(1.0, 0.25),
-            x_smoother: Smoother::new(1.0, 0.5),
-            y_smoother: Smoother::new(1.0, 0.5),
         }
     }
 
@@ -108,6 +104,25 @@ impl CameraController {
         self.zoom_smoother.set_target(self.zoom_target);
     }
 
+    pub fn handle_mouse_drag(
+        &mut self,
+        dx: f64,
+        dy: f64,
+        window_size: (u32, u32),
+        zoom: f32,
+        camera: &mut Camera,
+    ) {
+        let aspect = window_size.0 as f32 / window_size.1 as f32;
+
+        let world_dx = (dx as f32 / window_size.0 as f32) * 2.0 * aspect * zoom;
+        let world_dy = (dy as f32 / window_size.1 as f32) * 2.0 * zoom;
+
+        camera.eye.x -= world_dx;
+        camera.eye.y += world_dy;
+        camera.target.x -= world_dx;
+        camera.target.y += world_dy;
+    }
+
     pub fn update_camera(&mut self, camera: &mut Camera) {
         use cgmath::InnerSpace;
 
@@ -136,11 +151,6 @@ impl CameraController {
         }
 
         self.zoom_smoother.update();
-        self.x_smoother.update();
-        self.y_smoother.update();
-
         camera.zoom = self.zoom_smoother.current;
-        camera.eye.x = self.x_smoother.current;
-        camera.eye.y = self.y_smoother.current;
     }
 }

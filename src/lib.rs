@@ -31,7 +31,7 @@ impl Instance {
     }
 }
 
-const NUM_INSTANCES_PER_ROW: u32 = 10;
+const NUM_INSTANCES_PER_ROW: u32 = 100;
 const INSTANCE_DISPLACEMENT: cgmath::Vector3<f32> = cgmath::Vector3::new(
     NUM_INSTANCES_PER_ROW as f32 * 0.5,
     0.0,
@@ -151,6 +151,9 @@ pub struct State {
     camera_controller: camera::CameraController,
     instances: Vec<Instance>,
     instance_buffer: wgpu::Buffer,
+    is_ctrl_pressed: bool,
+    is_dragging: bool,
+    last_mouse_pos: Option<(f64, f64)>,
 }
 
 impl State {
@@ -253,7 +256,7 @@ impl State {
             aspect: config.width as f32 / config.height as f32,
             zoom: 1.0,
             znear: 0.1,
-            zfar: 100.0,
+            zfar: 10000.0,
         };
         let mut camera_uniform = camera::CameraUniform::new();
         camera_uniform.update_view_proj(&camera);
@@ -365,7 +368,7 @@ impl State {
                             cgmath::Deg(0.0),
                         )
                     } else {
-                        cgmath::Quaternion::from_axis_angle(position.normalize(), cgmath::Deg(45.0))
+                        cgmath::Quaternion::from_axis_angle(position.normalize(), cgmath::Deg(0.0))
                     };
 
                     Instance { position, rotation }
@@ -399,6 +402,9 @@ impl State {
             camera_controller,
             instances,
             instance_buffer,
+            is_ctrl_pressed: false,
+            is_dragging: false,
+            last_mouse_pos: None,
         })
     }
 
@@ -500,6 +506,10 @@ impl State {
     fn handle_key(&mut self, event_loop: &ActiveEventLoop, code: KeyCode, is_pressed: bool) {
         match (code, is_pressed) {
             (KeyCode::Escape, true) => event_loop.exit(),
+            (KeyCode::ControlLeft, _) | (KeyCode::ControlRight, _) => {
+                self.is_ctrl_pressed = is_pressed;
+            }
+
             _ => {
                 self.camera_controller.handle_key(code, is_pressed);
             }
@@ -582,6 +592,39 @@ impl ApplicationHandler<State> for App {
                 delta: MouseScrollDelta,
                 ..
             } => state.handle_wheel(event_loop, &MouseScrollDelta),
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.state.as_mut().map(|s| {
+                    s.is_dragging = state.is_pressed();
+                    if !s.is_dragging {
+                        s.last_mouse_pos = None;
+                    }
+                });
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                if let Some(s) = &mut self.state {
+                    let cur = (position.x, position.y);
+                    if s.is_dragging && s.is_ctrl_pressed {
+                        if let Some((lx, ly)) = s.last_mouse_pos {
+                            let dx = cur.0 - lx;
+                            let dy = cur.1 - ly;
+                            let win = s.window.inner_size();
+                            let zoom = s.camera.zoom;
+                            s.camera_controller.handle_mouse_drag(
+                                dx,
+                                dy,
+                                (win.width, win.height),
+                                zoom,
+                                &mut s.camera,
+                            );
+                        }
+                    }
+                    s.last_mouse_pos = Some(cur);
+                }
+            }
             _ => {}
         }
     }

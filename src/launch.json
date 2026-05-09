@@ -1,0 +1,11 @@
+{
+    "type": "lldb",
+    "request": "launch",
+    "name": "Debug",
+    "cargo": {
+        "args": [
+            "build"
+        ]
+    },
+    "args": []
+}
