@@ -1,3 +1,4 @@
+use crate::animation::Smoother;
 use winit::{event::*, keyboard::KeyCode};
 
 pub struct Camera {
@@ -56,6 +57,9 @@ pub struct CameraController {
     pub is_left_pressed: bool,
     pub is_right_pressed: bool,
     pub zoom_target: f32,
+    pub zoom_smoother: Smoother,
+    pub x_smoother: Smoother,
+    pub y_smoother: Smoother,
 }
 
 impl CameraController {
@@ -67,6 +71,9 @@ impl CameraController {
             is_left_pressed: false,
             is_right_pressed: false,
             zoom_target: 1.0,
+            zoom_smoother: Smoother::new(1.0, 0.25),
+            x_smoother: Smoother::new(1.0, 0.5),
+            y_smoother: Smoother::new(1.0, 0.5),
         }
     }
 
@@ -98,9 +105,10 @@ impl CameraController {
         } else {
             self.zoom_target *= 1.1;
         }
+        self.zoom_smoother.set_target(self.zoom_target);
     }
 
-    pub fn update_camera(&self, camera: &mut Camera) {
+    pub fn update_camera(&mut self, camera: &mut Camera) {
         use cgmath::InnerSpace;
 
         let side_vector = (camera.target - camera.eye).normalize().cross(camera.up);
@@ -126,6 +134,13 @@ impl CameraController {
             camera.eye += displacement;
             camera.target += displacement;
         }
-        camera.zoom = self.zoom_target;
+
+        self.zoom_smoother.update();
+        self.x_smoother.update();
+        self.y_smoother.update();
+
+        camera.zoom = self.zoom_smoother.current;
+        camera.eye.x = self.x_smoother.current;
+        camera.eye.y = self.y_smoother.current;
     }
 }
