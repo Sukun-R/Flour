@@ -61,15 +61,15 @@ pub struct CameraController {
 }
 
 impl CameraController {
-    pub fn new(speed: f32) -> Self {
+    pub fn new(speed: f32, camera: &Camera) -> Self {
         Self {
             speed,
             is_forward_pressed: false,
             is_backward_pressed: false,
             is_left_pressed: false,
             is_right_pressed: false,
-            zoom_target: 1.0,
-            zoom_smoother: Smoother::new(1.0, 0.25),
+            zoom_target: camera.zoom,
+            zoom_smoother: Smoother::new(camera.zoom, 0.25),
         }
     }
 
@@ -101,6 +101,7 @@ impl CameraController {
         } else {
             self.zoom_target *= 1.1;
         }
+
         self.zoom_smoother.set_target(self.zoom_target);
     }
 

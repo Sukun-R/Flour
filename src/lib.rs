@@ -1,5 +1,8 @@
+use crate::stroke::SegmentInstance;
+use crate::stroke::Stroke;
 use std::sync::Arc;
 
+use image::GenericImageView;
 use winit::{
     application::ApplicationHandler,
     event::*,
@@ -14,6 +17,7 @@ use cgmath::prelude::*;
 
 mod animation;
 mod camera;
+mod stroke;
 mod texture;
 
 struct Instance {
@@ -31,11 +35,11 @@ impl Instance {
     }
 }
 
-const NUM_INSTANCES_PER_ROW: u32 = 100;
+const NUM_INSTANCES_PER_ROW: u32 = 1000;
 const INSTANCE_DISPLACEMENT: cgmath::Vector3<f32> = cgmath::Vector3::new(
     NUM_INSTANCES_PER_ROW as f32 * 0.5,
-    0.0,
     NUM_INSTANCES_PER_ROW as f32 * 0.5,
+    0.0,
 );
 
 #[repr(C)]
@@ -154,6 +158,11 @@ pub struct State {
     is_ctrl_pressed: bool,
     is_dragging: bool,
     last_mouse_pos: Option<(f64, f64)>,
+    strokes: Vec<Stroke>,
+    current_stroke: Option<Stroke>,
+    stroke_instance_count: u32,
+    stroke_buffer: wgpu::Buffer,
+    stroke_pipeline: wgpu::RenderPipeline,
 }
 
 impl State {
@@ -288,7 +297,7 @@ impl State {
             }],
             label: Some("camera_bind_group"),
         });
-        let camera_controller = camera::CameraController::new(0.2);
+        let camera_controller = camera::CameraController::new(0.2, &camera);
 
         let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
 
@@ -382,6 +391,51 @@ impl State {
             usage: wgpu::BufferUsages::VERTEX,
         });
 
+        let stroke_shader = device.create_shader_module(wgpu::include_wgsl!("stroke.wgsl"));
+
+        let stroke_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Stroke Pipeline Layout"),
+                bind_group_layouts: &[Some(&camera_bind_group_layout)],
+                immediate_size: 0,
+            });
+
+        let stroke_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Stroke Pipeline"),
+            layout: Some(&stroke_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &stroke_shader,
+                entry_point: Some("vs_stroke"),
+                buffers: &[SegmentInstance::desc()],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &stroke_shader,
+                entry_point: Some("fs_stroke"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let stroke_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Stroke Buffer"),
+            size: (std::mem::size_of::<SegmentInstance>() * 100_000) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         Ok(Self {
             surface,
             device,
@@ -405,6 +459,11 @@ impl State {
             is_ctrl_pressed: false,
             is_dragging: false,
             last_mouse_pos: None,
+            strokes: Vec::new(),
+            current_stroke: None,
+            stroke_instance_count: 0,
+            stroke_buffer,
+            stroke_pipeline,
         })
     }
 
@@ -473,9 +532,9 @@ impl State {
                     depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.1,
-                            g: 0.5,
-                            b: 0.6,
+                            r: 1.0,
+                            g: 1.0,
+                            b: 1.0,
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
@@ -494,6 +553,13 @@ impl State {
             render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
             render_pass.draw_indexed(0..self.num_indices, 0, 0..self.instances.len() as _);
+
+            if self.stroke_instance_count > 0 {
+                render_pass.set_pipeline(&self.stroke_pipeline);
+                render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                render_pass.set_vertex_buffer(0, self.stroke_buffer.slice(..));
+                render_pass.draw(0..6, 0..self.stroke_instance_count);
+            }
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -519,14 +585,40 @@ impl State {
     fn handle_wheel(&mut self, _event_loop: &ActiveEventLoop, delta: &MouseScrollDelta) {
         match delta {
             MouseScrollDelta::LineDelta(_, y) => {
-                if *y > 0.0 {
-                    self.camera_controller.handle_wheel(true)
-                } else {
-                    self.camera_controller.handle_wheel(false)
-                }
+                self.camera_controller.handle_wheel(*y > 0.0);
             }
             _ => {}
         }
+    }
+
+    fn screen_to_world(&self, sx: f64, sy: f64) -> [f32; 2] {
+        let size = self.window.inner_size();
+        let ndc_x = (sx as f32 / size.width as f32) * 2.0 - 1.0;
+        let ndc_y = 1.0 - (sy as f32 / size.height as f32) * 2.0;
+        let wx = ndc_x * self.camera.aspect * self.camera.zoom + self.camera.eye.x;
+        let wy = ndc_y * self.camera.zoom + self.camera.eye.y;
+        [wx, wy]
+    }
+
+    fn rebuild_stroke_buffer(&mut self) {
+        let segments: Vec<SegmentInstance> = self
+            .strokes
+            .iter()
+            .chain(self.current_stroke.iter())
+            .flat_map(|stroke| {
+                stroke.points.windows(2).map(|w| SegmentInstance {
+                    point_a: w[0],
+                    point_b: w[1],
+                    color: stroke.color,
+                    width: stroke.width,
+                    _pad: [0.0; 3],
+                })
+            })
+            .collect();
+
+        self.queue
+            .write_buffer(&self.stroke_buffer, 0, bytemuck::cast_slice(&segments));
+        self.stroke_instance_count = segments.len() as u32;
     }
 }
 
@@ -542,12 +634,25 @@ impl App {
 
 impl ApplicationHandler<State> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        use winit::platform::windows::WindowAttributesExtWindows;
+
+        let icon_bytes = include_bytes!("gurakoro.png");
+        let icon_image = image::load_from_memory(icon_bytes).unwrap();
+        let icon_rgba = icon_image.to_rgba8();
+        let (width, height) = icon_image.dimensions();
+
+        let icon = winit::window::Icon::from_rgba(icon_rgba.into_raw(), width, height).unwrap();
+
         #[allow(unused_mut)]
-        let mut window_attributes = Window::default_attributes();
+        let mut window_attributes = Window::default_attributes()
+            .with_window_icon(Some(icon.clone()))
+            .with_taskbar_icon(Some(icon))
+            .with_visible(false);
 
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
-        self.state = Some(pollster::block_on(State::new(window)).unwrap());
+        self.state = Some(pollster::block_on(State::new(window.clone())).unwrap());
+        window.set_visible(true);
     }
 
     #[allow(unused_mut)]
@@ -588,10 +693,7 @@ impl ApplicationHandler<State> for App {
                     },
                 ..
             } => state.handle_key(event_loop, code, key_state.is_pressed()),
-            WindowEvent::MouseWheel {
-                delta: MouseScrollDelta,
-                ..
-            } => state.handle_wheel(event_loop, &MouseScrollDelta),
+            WindowEvent::MouseWheel { delta, .. } => state.handle_wheel(event_loop, &delta),
             WindowEvent::MouseInput {
                 state,
                 button: MouseButton::Left,
@@ -599,8 +701,15 @@ impl ApplicationHandler<State> for App {
             } => {
                 self.state.as_mut().map(|s| {
                     s.is_dragging = state.is_pressed();
-                    if !s.is_dragging {
+                    if s.is_dragging {
+                        s.current_stroke = Some(Stroke::new([0.0, 0.0, 0.0, 1.0], 0.00390625));
+                    } else {
                         s.last_mouse_pos = None;
+
+                        if let Some(st) = s.current_stroke.take() {
+                            s.strokes.push(st);
+                            s.rebuild_stroke_buffer();
+                        }
                     }
                 });
             }
@@ -620,6 +729,12 @@ impl ApplicationHandler<State> for App {
                                 zoom,
                                 &mut s.camera,
                             );
+                        }
+                    } else if s.is_dragging {
+                        let world = s.screen_to_world(cur.0, cur.1);
+                        if let Some(stroke) = &mut s.current_stroke {
+                            stroke.add_point(world[0], world[1]);
+                            s.rebuild_stroke_buffer();
                         }
                     }
                     s.last_mouse_pos = Some(cur);
