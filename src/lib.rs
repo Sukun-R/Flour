@@ -1,3 +1,4 @@
+use crate::stroke::DiscInstance;
 use crate::stroke::SegmentInstance;
 use crate::stroke::Stroke;
 use std::sync::Arc;
@@ -23,6 +24,30 @@ mod texture;
 struct Instance {
     position: cgmath::Vector3<f32>,
     rotation: cgmath::Quaternion<f32>,
+}
+// InterpPointの対応する構造体
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct InterpPoint {
+    pos: [f32; 2],
+    stroke_id: u32,
+    _pad: u32,
+}
+
+// StrokeInfoの対応する構造体
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct StrokeInfo {
+    color: [f32; 4],
+    width: f32,
+    _pad: [f32; 3],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct ComputeParams {
+    point_count: u32,
+    subdivisions: u32,
 }
 
 impl Instance {
@@ -163,6 +188,18 @@ pub struct State {
     stroke_instance_count: u32,
     stroke_buffer: wgpu::Buffer,
     stroke_pipeline: wgpu::RenderPipeline,
+    disc_instance_count: u32,
+    disc_buffer: wgpu::Buffer,
+    disc_pipeline: wgpu::RenderPipeline,
+    raw_point_buffer: wgpu::Buffer,
+    interpolated_buffer: wgpu::Buffer,
+    compute_pipeline: wgpu::ComputePipeline,
+    compute_bind_group: wgpu::BindGroup,
+    params_buffer: wgpu::Buffer,
+    stroke_info_buffer: wgpu::Buffer,
+    segment_compute_pipeline: wgpu::ComputePipeline,
+    segment_compute_bind_group: wgpu::BindGroup,
+    raw_point_count: u32,
 }
 
 impl State {
@@ -432,10 +469,253 @@ impl State {
         let stroke_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Stroke Buffer"),
             size: (std::mem::size_of::<SegmentInstance>() * 100_000) as u64,
+            usage: wgpu::BufferUsages::VERTEX
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+
+        let disc_shader = device.create_shader_module(wgpu::include_wgsl!("disc.wgsl"));
+
+        let disc_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Disc Pipeline Layout"),
+            bind_group_layouts: &[Some(&camera_bind_group_layout)],
+            immediate_size: 0,
+        });
+
+        let disc_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Disc Pipeline"),
+            layout: Some(&disc_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &disc_shader,
+                entry_point: Some("vs_disc"),
+                buffers: &[DiscInstance::desc()],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &disc_shader,
+                entry_point: Some("fs_disc"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let disc_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Disc Buffer"),
+            size: (std::mem::size_of::<DiscInstance>() * 100_000) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
+        let compute_shader = device.create_shader_module(wgpu::include_wgsl!("catmull_rom.wgsl"));
+
+        let compute_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Compute BGL"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let compute_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Compute Pipeline Layout"),
+                bind_group_layouts: &[Some(&compute_bind_group_layout)],
+                immediate_size: 0,
+            });
+
+        let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Catmull-Rom Pipeline"),
+            layout: Some(&compute_pipeline_layout),
+            module: &compute_shader,
+            entry_point: Some("cs_catmull"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        let max_points = 10_000usize;
+        let subdivisions = 8u32;
+
+        let raw_point_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Raw Point Buffer"),
+            size: (std::mem::size_of::<InterpPoint>() * max_points) as u64, // ← [f32;2]からInterpPointに
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let interpolated_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Interpolated Buffer"),
+            size: (std::mem::size_of::<InterpPoint>() * max_points * subdivisions as usize) as u64,
+            usage: wgpu::BufferUsages::STORAGE, // COPY_SRCは不要
+            mapped_at_creation: false,
+        });
+
+        let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Compute Params"),
+            contents: bytemuck::cast_slice(&[ComputeParams {
+                point_count: 0,
+                subdivisions,
+            }]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Compute BG"),
+            layout: &compute_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: raw_point_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: interpolated_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: params_buffer.as_entire_binding(),
+                },
+            ],
+        });
+        let stroke_info_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Stroke Info Buffer"),
+            size: (std::mem::size_of::<StrokeInfo>() * 10_000) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let segment_compute_shader =
+            device.create_shader_module(wgpu::include_wgsl!("cs_segment.wgsl"));
+
+        let segment_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Segment Compute BGL"),
+                entries: &[
+                    // interp_points (read)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // out_segments (read_write)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // stroke_infos (read)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // params (uniform)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let segment_compute_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("Segment Compute Pipeline"),
+                layout: Some(
+                    &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: None,
+                        bind_group_layouts: &[Some(&segment_bind_group_layout)],
+                        immediate_size: 0,
+                    }),
+                ),
+                module: &segment_compute_shader,
+                entry_point: Some("cs_segment"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+
+        let segment_compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Segment Compute BG"),
+            layout: &segment_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: interpolated_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: stroke_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: stroke_info_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: params_buffer.as_entire_binding(),
+                },
+            ],
+        });
         Ok(Self {
             surface,
             device,
@@ -464,6 +744,18 @@ impl State {
             stroke_instance_count: 0,
             stroke_buffer,
             stroke_pipeline,
+            disc_instance_count: 0,
+            disc_buffer,
+            disc_pipeline,
+            raw_point_buffer,
+            interpolated_buffer,
+            compute_pipeline,
+            compute_bind_group,
+            params_buffer,
+            raw_point_count: 0,
+            stroke_info_buffer,
+            segment_compute_pipeline,
+            segment_compute_bind_group,
         })
     }
 
@@ -484,6 +776,48 @@ impl State {
             0,
             bytemuck::cast_slice(&[self.camera_uniform]),
         );
+
+        // ① InterpPoint形式で生点群を送る（古い[f32;2]のコードは削除）
+        self.upload_raw_points();
+
+        if self.raw_point_count < 2 {
+            self.stroke_instance_count = 0;
+            return;
+        }
+
+        // paramsを更新
+        self.queue.write_buffer(
+            &self.params_buffer,
+            0,
+            bytemuck::cast_slice(&[ComputeParams {
+                point_count: self.raw_point_count,
+                subdivisions: 8,
+            }]),
+        );
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Compute Encoder"),
+            });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Catmull-Rom"),
+                timestamp_writes: None,
+            });
+            // ① Catmull-Rom補間
+            pass.set_pipeline(&self.compute_pipeline);
+            pass.set_bind_group(0, &self.compute_bind_group, &[]);
+            pass.dispatch_workgroups((self.raw_point_count - 1).div_ceil(64), 1, 1);
+
+            // ② SegmentInstance生成
+            let interp_count = self.raw_point_count * 8;
+            pass.set_pipeline(&self.segment_compute_pipeline);
+            pass.set_bind_group(0, &self.segment_compute_bind_group, &[]);
+            pass.dispatch_workgroups((interp_count - 1).div_ceil(64), 1, 1);
+            self.stroke_instance_count = interp_count - 1;
+        }
+        self.queue.submit([encoder.finish()]);
     }
 
     pub fn render(&mut self) -> anyhow::Result<()> {
@@ -560,6 +894,13 @@ impl State {
                 render_pass.set_vertex_buffer(0, self.stroke_buffer.slice(..));
                 render_pass.draw(0..6, 0..self.stroke_instance_count);
             }
+
+            if self.disc_instance_count > 0 {
+                render_pass.set_pipeline(&self.disc_pipeline);
+                render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                render_pass.set_vertex_buffer(0, self.disc_buffer.slice(..));
+                render_pass.draw(0..6, 0..self.disc_instance_count);
+            }
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -599,27 +940,102 @@ impl State {
         let wy = ndc_y * self.camera.zoom + self.camera.eye.y;
         [wx, wy]
     }
-
     fn rebuild_stroke_buffer(&mut self) {
-        let segments: Vec<SegmentInstance> = self
+        // SegmentはComputeがやるのでDiscだけ
+        let mut discs: Vec<DiscInstance> = Vec::new();
+
+        for stroke in self.strokes.iter().chain(self.current_stroke.iter()) {
+            let pts = &stroke.points;
+            if pts.len() < 2 {
+                continue;
+            }
+
+            discs.push(DiscInstance {
+                center: pts[0],
+                color: stroke.color,
+                width: stroke.width,
+                _pad: [0.0],
+            });
+            discs.push(DiscInstance {
+                center: pts[pts.len() - 1],
+                color: stroke.color,
+                width: stroke.width,
+                _pad: [0.0],
+            });
+
+            for i in 1..pts.len() - 1 {
+                let dir_ab = normalize2(sub2(pts[i + 1], pts[i]));
+                let dir_prev = normalize2(sub2(pts[i], pts[i - 1]));
+                let nor_ab = [-dir_ab[1], dir_ab[0]];
+                let nor_prev = [-dir_prev[1], dir_prev[0]];
+                let miter = normalize2(add2(nor_ab, nor_prev));
+                let d = dot2(miter, nor_ab);
+                if d > 0.0001 && 1.0 / d > 2.0 {
+                    discs.push(DiscInstance {
+                        center: pts[i],
+                        color: stroke.color,
+                        width: stroke.width,
+                        _pad: [0.0],
+                    });
+                }
+            }
+        }
+
+        self.queue
+            .write_buffer(&self.disc_buffer, 0, bytemuck::cast_slice(&discs));
+        self.disc_instance_count = discs.len() as u32;
+    }
+    fn upload_raw_points(&mut self) {
+        let mut points: Vec<InterpPoint> = Vec::new();
+        let mut infos: Vec<StrokeInfo> = Vec::new();
+
+        for (id, stroke) in self
             .strokes
             .iter()
             .chain(self.current_stroke.iter())
-            .flat_map(|stroke| {
-                stroke.points.windows(2).map(|w| SegmentInstance {
-                    point_a: w[0],
-                    point_b: w[1],
-                    color: stroke.color,
-                    width: stroke.width,
-                    _pad: [0.0; 3],
-                })
-            })
-            .collect();
+            .filter(|s| s.points.len() >= 2) // ← ここでフィルタ
+            .enumerate()
+        {
+            if stroke.points.len() < 2 {
+                continue;
+            }
+            infos.push(StrokeInfo {
+                color: stroke.color,
+                width: stroke.width,
+                _pad: [0.0; 3],
+            });
+            for &p in &stroke.points {
+                points.push(InterpPoint {
+                    pos: p,
+                    stroke_id: id as u32,
+                    _pad: 0,
+                });
+            }
+        }
 
         self.queue
-            .write_buffer(&self.stroke_buffer, 0, bytemuck::cast_slice(&segments));
-        self.stroke_instance_count = segments.len() as u32;
+            .write_buffer(&self.raw_point_buffer, 0, bytemuck::cast_slice(&points));
+        self.queue
+            .write_buffer(&self.stroke_info_buffer, 0, bytemuck::cast_slice(&infos));
+        self.raw_point_count = points.len() as u32;
     }
+}
+
+fn sub2(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
+    [a[0] - b[0], a[1] - b[1]]
+}
+fn add2(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
+    [a[0] + b[0], a[1] + b[1]]
+}
+fn dot2(a: [f32; 2], b: [f32; 2]) -> f32 {
+    a[0] * b[0] + a[1] * b[1]
+}
+fn normalize2(v: [f32; 2]) -> [f32; 2] {
+    let len = (v[0] * v[0] + v[1] * v[1]).sqrt();
+    if len < 0.0001 {
+        return [1.0, 0.0];
+    }
+    [v[0] / len, v[1] / len]
 }
 
 pub struct App {
@@ -703,6 +1119,7 @@ impl ApplicationHandler<State> for App {
                     s.is_dragging = state.is_pressed();
                     if s.is_dragging {
                         s.current_stroke = Some(Stroke::new([0.0, 0.0, 0.0, 1.0], 0.00390625));
+                        // 0.00390625
                     } else {
                         s.last_mouse_pos = None;
 
