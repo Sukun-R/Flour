@@ -101,7 +101,7 @@ impl CameraController {
         } else {
             self.zoom_target *= 1.1;
         }
-
+        self.zoom_smoother.set_friction(0.25);
         self.zoom_smoother.set_target(self.zoom_target);
     }
 

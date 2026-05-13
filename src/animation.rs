@@ -21,4 +21,8 @@ impl Smoother {
     pub fn set_target(&mut self, target: f32) {
         self.target = target;
     }
+
+    pub fn set_friction(&mut self, friction: f32) {
+        self.friction = friction;
+    }
 }

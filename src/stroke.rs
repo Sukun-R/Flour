@@ -119,7 +119,7 @@ impl Stroke {
 
             let dist_sq = dx * dx + dy * dy;
 
-            if dist_sq < self.width * 0.001 {
+            if dist_sq < self.width * 0.000001 {
                 return;
             }
         }

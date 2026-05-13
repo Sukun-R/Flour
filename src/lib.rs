@@ -1,6 +1,8 @@
+use crate::math::{add2, dot2, normalize2, sub2};
 use crate::stroke::DiscInstance;
 use crate::stroke::SegmentInstance;
 use crate::stroke::Stroke;
+
 use std::sync::Arc;
 
 use image::GenericImageView;
@@ -18,6 +20,7 @@ use cgmath::prelude::*;
 
 mod animation;
 mod camera;
+mod math;
 mod stroke;
 mod texture;
 
@@ -161,6 +164,9 @@ impl Vertex {
 }
 
 pub struct State {
+    debug_mode: bool,
+    debug_point_buffer: wgpu::Buffer,
+    debug_point_count: u32,
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -180,7 +186,7 @@ pub struct State {
     camera_controller: camera::CameraController,
     instances: Vec<Instance>,
     instance_buffer: wgpu::Buffer,
-    is_ctrl_pressed: bool,
+    is_space_pressed: bool,
     is_dragging: bool,
     last_mouse_pos: Option<(f64, f64)>,
     strokes: Vec<Stroke>,
@@ -200,6 +206,7 @@ pub struct State {
     segment_compute_pipeline: wgpu::ComputePipeline,
     segment_compute_bind_group: wgpu::BindGroup,
     raw_point_count: u32,
+    last_space_press_time: Option<std::time::Instant>,
 }
 
 impl State {
@@ -253,6 +260,13 @@ impl State {
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
+
+        let debug_point_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Debug Point Buffer"),
+            size: (std::mem::size_of::<DiscInstance>() * 100_000) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
         let diffuse_bytes = include_bytes!("donald.png");
         let diffuse_texture =
@@ -574,7 +588,7 @@ impl State {
             cache: None,
         });
 
-        let max_points = 10_000usize;
+        let max_points = 500_000usize;
         let subdivisions = 8u32;
 
         let raw_point_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -717,6 +731,9 @@ impl State {
             ],
         });
         Ok(Self {
+            debug_mode: false,
+            debug_point_buffer,   // ← 追加
+            debug_point_count: 0, // ← 追加
             surface,
             device,
             queue,
@@ -736,7 +753,7 @@ impl State {
             camera_controller,
             instances,
             instance_buffer,
-            is_ctrl_pressed: false,
+            is_space_pressed: false,
             is_dragging: false,
             last_mouse_pos: None,
             strokes: Vec::new(),
@@ -756,6 +773,7 @@ impl State {
             stroke_info_buffer,
             segment_compute_pipeline,
             segment_compute_bind_group,
+            last_space_press_time: None,
         })
     }
 
@@ -779,7 +797,7 @@ impl State {
 
         // ① InterpPoint形式で生点群を送る（古い[f32;2]のコードは削除）
         self.upload_raw_points();
-
+        self.upload_debug_points(); // ← 追加
         if self.raw_point_count < 2 {
             self.stroke_instance_count = 0;
             return;
@@ -887,19 +905,27 @@ impl State {
             render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
             render_pass.draw_indexed(0..self.num_indices, 0, 0..self.instances.len() as _);
+            if self.debug_mode {
+                if self.debug_point_count > 0 {
+                    render_pass.set_pipeline(&self.disc_pipeline);
+                    render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                    render_pass.set_vertex_buffer(0, self.debug_point_buffer.slice(..));
+                    render_pass.draw(0..6, 0..self.debug_point_count);
+                }
+            } else {
+                if self.stroke_instance_count > 0 {
+                    render_pass.set_pipeline(&self.stroke_pipeline);
+                    render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                    render_pass.set_vertex_buffer(0, self.stroke_buffer.slice(..));
+                    render_pass.draw(0..6, 0..self.stroke_instance_count);
+                }
 
-            if self.stroke_instance_count > 0 {
-                render_pass.set_pipeline(&self.stroke_pipeline);
-                render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-                render_pass.set_vertex_buffer(0, self.stroke_buffer.slice(..));
-                render_pass.draw(0..6, 0..self.stroke_instance_count);
-            }
-
-            if self.disc_instance_count > 0 {
-                render_pass.set_pipeline(&self.disc_pipeline);
-                render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-                render_pass.set_vertex_buffer(0, self.disc_buffer.slice(..));
-                render_pass.draw(0..6, 0..self.disc_instance_count);
+                if self.disc_instance_count > 0 {
+                    render_pass.set_pipeline(&self.disc_pipeline);
+                    render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                    render_pass.set_vertex_buffer(0, self.disc_buffer.slice(..));
+                    render_pass.draw(0..6, 0..self.disc_instance_count);
+                }
             }
         }
 
@@ -910,11 +936,31 @@ impl State {
     }
 
     // impl State
-    fn handle_key(&mut self, event_loop: &ActiveEventLoop, code: KeyCode, is_pressed: bool) {
+    fn handle_key(&mut self, _event_loop: &ActiveEventLoop, code: KeyCode, is_pressed: bool) {
         match (code, is_pressed) {
-            (KeyCode::Escape, true) => event_loop.exit(),
-            (KeyCode::ControlLeft, _) | (KeyCode::ControlRight, _) => {
-                self.is_ctrl_pressed = is_pressed;
+            (KeyCode::Escape, true) => self.debug_mode = !self.debug_mode,
+            (KeyCode::Space, true) => {
+                if !self.is_space_pressed {
+                    self.is_space_pressed = true;
+                    let now = std::time::Instant::now();
+                    let is_double = self
+                        .last_space_press_time
+                        .map(|t| t.elapsed().as_millis() < 300)
+                        .unwrap_or(false);
+
+                    if is_double {
+                        self.camera.zoom = 1.0;
+                        self.camera_controller.zoom_target = 1.0;
+                        self.camera_controller.zoom_smoother.set_friction(0.1);
+                        self.camera_controller.zoom_smoother.set_target(1.0);
+                        self.last_space_press_time = None;
+                    } else {
+                        self.last_space_press_time = Some(now);
+                    }
+                }
+            }
+            (KeyCode::Space, false) => {
+                self.is_space_pressed = false;
             }
 
             _ => {
@@ -988,6 +1034,7 @@ impl State {
     fn upload_raw_points(&mut self) {
         let mut points: Vec<InterpPoint> = Vec::new();
         let mut infos: Vec<StrokeInfo> = Vec::new();
+        let max_points = 500_000usize;
 
         for (id, stroke) in self
             .strokes
@@ -996,6 +1043,9 @@ impl State {
             .filter(|s| s.points.len() >= 2) // ← ここでフィルタ
             .enumerate()
         {
+            if points.len() >= max_points {
+                break; // これ以上追加しない
+            }
             if stroke.points.len() < 2 {
                 continue;
             }
@@ -1004,7 +1054,10 @@ impl State {
                 width: stroke.width,
                 _pad: [0.0; 3],
             });
-            for &p in &stroke.points {
+
+            let resampled = Self::resample_stroke(&stroke.points, stroke.width * 2.0);
+
+            for &p in &resampled {
                 points.push(InterpPoint {
                     pos: p,
                     stroke_id: id as u32,
@@ -1019,23 +1072,59 @@ impl State {
             .write_buffer(&self.stroke_info_buffer, 0, bytemuck::cast_slice(&infos));
         self.raw_point_count = points.len() as u32;
     }
-}
 
-fn sub2(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
-    [a[0] - b[0], a[1] - b[1]]
-}
-fn add2(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
-    [a[0] + b[0], a[1] + b[1]]
-}
-fn dot2(a: [f32; 2], b: [f32; 2]) -> f32 {
-    a[0] * b[0] + a[1] * b[1]
-}
-fn normalize2(v: [f32; 2]) -> [f32; 2] {
-    let len = (v[0] * v[0] + v[1] * v[1]).sqrt();
-    if len < 0.0001 {
-        return [1.0, 0.0];
+    fn resample_stroke(points: &[[f32; 2]], interval: f32) -> Vec<[f32; 2]> {
+        if points.len() < 2 {
+            return points.to_vec();
+        }
+
+        let mut result = vec![points[0]];
+        let mut accumulated = 0.0f32;
+
+        for i in 1..points.len() {
+            let prev = points[i - 1];
+            let cur = points[i];
+            let dx = cur[0] - prev[0];
+            let dy = cur[1] - prev[1];
+            let seg_len = (dx * dx + dy * dy).sqrt();
+
+            let mut t = (interval - accumulated) / seg_len;
+
+            while t <= 1.0 {
+                let x = prev[0] + dx * t;
+                let y = prev[1] + dy * t;
+                result.push([x, y]);
+                t += interval / seg_len;
+            }
+
+            accumulated = (1.0 - (t - interval / seg_len)) * seg_len;
+        }
+
+        result.push(*points.last().unwrap());
+        result
     }
-    [v[0] / len, v[1] / len]
+
+    fn upload_debug_points(&mut self) {
+        let discs: Vec<DiscInstance> = self
+            .strokes
+            .iter()
+            .chain(self.current_stroke.iter())
+            .filter(|s| s.points.len() >= 2)
+            .flat_map(|stroke| {
+                let resampled = Self::resample_stroke(&stroke.points, stroke.width * 2.0);
+                resampled.into_iter().map(move |p| DiscInstance {
+                    center: p,
+                    color: [1.0, 0.0, 0.0, 0.5], // 赤で表示
+                    width: stroke.width * 0.3,
+                    _pad: [0.0],
+                })
+            })
+            .collect();
+
+        self.queue
+            .write_buffer(&self.debug_point_buffer, 0, bytemuck::cast_slice(&discs));
+        self.debug_point_count = discs.len() as u32;
+    }
 }
 
 pub struct App {
@@ -1115,6 +1204,7 @@ impl ApplicationHandler<State> for App {
                 button: MouseButton::Left,
                 ..
             } => {
+                #[allow(clippy::option_map_unit_fn)]
                 self.state.as_mut().map(|s| {
                     s.is_dragging = state.is_pressed();
                     if s.is_dragging {
@@ -1133,7 +1223,7 @@ impl ApplicationHandler<State> for App {
             WindowEvent::CursorMoved { position, .. } => {
                 if let Some(s) = &mut self.state {
                     let cur = (position.x, position.y);
-                    if s.is_dragging && s.is_ctrl_pressed {
+                    if s.is_dragging && s.is_space_pressed {
                         if let Some((lx, ly)) = s.last_mouse_pos {
                             let dx = cur.0 - lx;
                             let dy = cur.1 - ly;
