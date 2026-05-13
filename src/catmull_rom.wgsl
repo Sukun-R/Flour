@@ -36,7 +36,13 @@ fn cs_catmull(@builtin(global_invocation_id) id: vec3<u32>) {
     let cur_id = raw_points[seg_idx].stroke_id;
     let next_id = raw_points[seg_idx + 1u].stroke_id;
 
-    if cur_id != next_id { return; }
+    if cur_id != next_id {
+        // 境界をまたぐ補間点をゼロで埋める
+        for (var s = 0u; s < sub; s++) {
+            out_points[seg_idx * sub + s] = InterpPoint(vec2(0.0), 0xFFFFFFFFu, 0u);
+        }
+        return;
+    }
 
     let i0 = select(seg_idx, seg_idx - 1u, seg_idx > 0u && raw_points[seg_idx - 1u].stroke_id == cur_id);
     let i1 = seg_idx;

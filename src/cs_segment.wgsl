@@ -41,7 +41,7 @@ fn cs_segment(@builtin(global_invocation_id) id: vec3<u32>) {
     let nxt = interp_points[i + 1u];
 
     // ストローク境界はスキップ
-    if cur.stroke_id != nxt.stroke_id {
+    if cur.stroke_id == 0xFFFFFFFFu || cur.stroke_id != nxt.stroke_id {
         out_segments[i] = SegmentInstance(
             vec2(0.0), vec2(0.0), vec2(0.0), vec2(0.0),
             vec4(0.0), 0.0, array<f32,3>(0.0, 0.0, 0.0),

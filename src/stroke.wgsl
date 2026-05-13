@@ -35,6 +35,11 @@ fn seg_normal(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
 }
 
 fn miter_vec(nor_ab: vec2<f32>, nor_other: vec2<f32>) -> vec2<f32> {
+    let sum = nor_ab + nor_other;
+
+    if length(sum) > MITER_LIMIT {
+        return nor_ab;
+    }
     let miter = safe_normalize(nor_ab + nor_other);
     let len = 1.0 / max(dot(miter, nor_ab), 0.0001);
     if len > MITER_LIMIT {

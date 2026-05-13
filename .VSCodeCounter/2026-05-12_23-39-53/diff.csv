@@ -1,0 +1,9 @@
+"filename", "language", "WGSL", "Rust", "comment", "blank", "total"
+"c:\Users\Reo\Documents\code\note\src\camera.rs", "Rust", 0, 0, 0, 1, 1
+"c:\Users\Reo\Documents\code\note\src\catmull_rom.wgsl", "WGSL", 48, 0, 0, 12, 60
+"c:\Users\Reo\Documents\code\note\src\cs_segment.wgsl", "WGSL", 60, 0, 0, 13, 73
+"c:\Users\Reo\Documents\code\note\src\disc.wgsl", "WGSL", 42, 0, 0, 6, 48
+"c:\Users\Reo\Documents\code\note\src\lib.rs", "Rust", 0, 480, 12, 40, 532
+"c:\Users\Reo\Documents\code\note\src\stroke.rs", "Rust", 0, 111, 9, 9, 129
+"c:\Users\Reo\Documents\code\note\src\stroke.wgsl", "WGSL", 76, 0, 0, 13, 89
+"Total", "-", 226, 591, 21, 94, 932
