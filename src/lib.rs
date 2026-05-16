@@ -1,4 +1,6 @@
 use crate::math::{add2, dot2, normalize2, sub2};
+use crate::renderer::{ComputeParams, InterpPoint, StrokeInfo};
+use crate::renderer::{ComputeResources, DiscRenderer, StrokeRenderer};
 use crate::stroke::DiscInstance;
 use crate::stroke::SegmentInstance;
 use crate::stroke::Stroke;
@@ -14,44 +16,13 @@ use winit::{
     window::Window,
 };
 
-use wgpu::util::DeviceExt;
-
-use cgmath::prelude::*;
-
 mod animation;
 mod camera;
+mod input;
 mod math;
+mod renderer;
 mod stroke;
 mod texture;
-
-struct Instance {
-    position: cgmath::Vector3<f32>,
-    rotation: cgmath::Quaternion<f32>,
-}
-// InterpPointの対応する構造体
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct InterpPoint {
-    pos: [f32; 2],
-    stroke_id: u32,
-    _pad: u32,
-}
-
-// StrokeInfoの対応する構造体
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct StrokeInfo {
-    color: [f32; 4],
-    width: f32,
-    _pad: [f32; 3],
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct ComputeParams {
-    point_count: u32,
-    subdivisions: u32,
-}
 
 pub struct State {
     debug_mode: bool,
@@ -63,34 +34,13 @@ pub struct State {
     config: wgpu::SurfaceConfiguration,
     is_surface_configured: bool,
     window: Arc<Window>,
-    diffuse_bind_group: wgpu::BindGroup,
-    diffuse_texture: texture::Texture,
-    camera: camera::Camera,
-    camera_uniform: camera::CameraUniform,
-    camera_buffer: wgpu::Buffer,
-    camera_bind_group: wgpu::BindGroup,
-    camera_controller: camera::CameraController,
-    is_space_pressed: bool,
-    is_dragging: bool,
-    last_mouse_pos: Option<(f64, f64)>,
+    camera: camera::CameraState,
+    input: input::InputState,
     strokes: Vec<Stroke>,
     current_stroke: Option<Stroke>,
-    stroke_instance_count: u32,
-    stroke_buffer: wgpu::Buffer,
-    stroke_pipeline: wgpu::RenderPipeline,
-    disc_instance_count: u32,
-    disc_buffer: wgpu::Buffer,
-    disc_pipeline: wgpu::RenderPipeline,
-    raw_point_buffer: wgpu::Buffer,
-    interpolated_buffer: wgpu::Buffer,
-    compute_pipeline: wgpu::ComputePipeline,
-    compute_bind_group: wgpu::BindGroup,
-    params_buffer: wgpu::Buffer,
-    stroke_info_buffer: wgpu::Buffer,
-    segment_compute_pipeline: wgpu::ComputePipeline,
-    segment_compute_bind_group: wgpu::BindGroup,
-    raw_point_count: u32,
-    last_space_press_time: Option<std::time::Instant>,
+    stroke_renderer: StrokeRenderer,
+    disc_renderer: DiscRenderer,
+    compute_resources: ComputeResources,
 }
 
 impl State {
@@ -144,6 +94,9 @@ impl State {
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
+        let camera = camera::CameraState::new(&device, &config);
+
+        let input = input::InputState::new();
 
         let debug_point_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Debug Point Buffer"),
@@ -152,376 +105,11 @@ impl State {
             mapped_at_creation: false,
         });
 
-        let diffuse_bytes = include_bytes!("donald.png");
-        let diffuse_texture =
-            texture::Texture::from_bytes(&device, &queue, diffuse_bytes, "donald.png").unwrap();
+        let stroke_renderer = StrokeRenderer::new(&device, &config, &camera);
 
-        let texture_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-                label: Some("texture_bind_group_layout"),
-            });
-        let diffuse_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &texture_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&diffuse_texture.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler),
-                },
-            ],
-            label: Some("diffuse_bind_group"),
-        });
+        let disc_renderer = DiscRenderer::new(&device, &config, &camera);
 
-        let camera = camera::Camera {
-            eye: (0.0, 0.0, 10.0).into(),
-            target: (0.0, 0.0, 0.0).into(),
-            up: cgmath::Vector3::unit_y(),
-            aspect: config.width as f32 / config.height as f32,
-            zoom: 1.0,
-            znear: 0.1,
-            zfar: 10000.0,
-        };
-        let mut camera_uniform = camera::CameraUniform::new();
-        camera_uniform.update_view_proj(&camera);
-
-        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Camera Buffer"),
-            contents: bytemuck::cast_slice(&[camera_uniform]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-        let camera_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-                label: Some("camera_bind_group_layout"),
-            });
-        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &camera_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: camera_buffer.as_entire_binding(),
-            }],
-            label: Some("camera_bind_group"),
-        });
-        let camera_controller = camera::CameraController::new(0.2, &camera);
-
-        let stroke_shader = device.create_shader_module(wgpu::include_wgsl!("stroke.wgsl"));
-
-        let stroke_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Stroke Pipeline Layout"),
-                bind_group_layouts: &[Some(&camera_bind_group_layout)],
-                immediate_size: 0,
-            });
-
-        let stroke_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Stroke Pipeline"),
-            layout: Some(&stroke_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &stroke_shader,
-                entry_point: Some("vs_stroke"),
-                buffers: &[SegmentInstance::desc()],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &stroke_shader,
-                entry_point: Some("fs_stroke"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
-
-        let stroke_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Stroke Buffer"),
-            size: (std::mem::size_of::<SegmentInstance>() * 100_000) as u64,
-            usage: wgpu::BufferUsages::VERTEX
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
-        });
-
-        let disc_shader = device.create_shader_module(wgpu::include_wgsl!("disc.wgsl"));
-
-        let disc_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Disc Pipeline Layout"),
-            bind_group_layouts: &[Some(&camera_bind_group_layout)],
-            immediate_size: 0,
-        });
-
-        let disc_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Disc Pipeline"),
-            layout: Some(&disc_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &disc_shader,
-                entry_point: Some("vs_disc"),
-                buffers: &[DiscInstance::desc()],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &disc_shader,
-                entry_point: Some("fs_disc"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
-
-        let disc_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Disc Buffer"),
-            size: (std::mem::size_of::<DiscInstance>() * 100_000) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let compute_shader = device.create_shader_module(wgpu::include_wgsl!("catmull_rom.wgsl"));
-
-        let compute_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Compute BGL"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
-            });
-
-        let compute_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Compute Pipeline Layout"),
-                bind_group_layouts: &[Some(&compute_bind_group_layout)],
-                immediate_size: 0,
-            });
-
-        let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Catmull-Rom Pipeline"),
-            layout: Some(&compute_pipeline_layout),
-            module: &compute_shader,
-            entry_point: Some("cs_catmull"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
-
-        let max_points = 500_000usize;
-        let subdivisions = 8u32;
-
-        let raw_point_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Raw Point Buffer"),
-            size: (std::mem::size_of::<InterpPoint>() * max_points) as u64, // ← [f32;2]からInterpPointに
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let interpolated_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Interpolated Buffer"),
-            size: (std::mem::size_of::<InterpPoint>() * max_points * subdivisions as usize) as u64,
-            usage: wgpu::BufferUsages::STORAGE, // COPY_SRCは不要
-            mapped_at_creation: false,
-        });
-
-        let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Compute Params"),
-            contents: bytemuck::cast_slice(&[ComputeParams {
-                point_count: 0,
-                subdivisions,
-            }]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Compute BG"),
-            layout: &compute_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: raw_point_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: interpolated_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: params_buffer.as_entire_binding(),
-                },
-            ],
-        });
-        let stroke_info_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Stroke Info Buffer"),
-            size: (std::mem::size_of::<StrokeInfo>() * 10_000) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let segment_compute_shader =
-            device.create_shader_module(wgpu::include_wgsl!("cs_segment.wgsl"));
-
-        let segment_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Segment Compute BGL"),
-                entries: &[
-                    // interp_points (read)
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // out_segments (read_write)
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // stroke_infos (read)
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // params (uniform)
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
-            });
-
-        let segment_compute_pipeline =
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("Segment Compute Pipeline"),
-                layout: Some(
-                    &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                        label: None,
-                        bind_group_layouts: &[Some(&segment_bind_group_layout)],
-                        immediate_size: 0,
-                    }),
-                ),
-                module: &segment_compute_shader,
-                entry_point: Some("cs_segment"),
-                compilation_options: Default::default(),
-                cache: None,
-            });
-
-        let segment_compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Segment Compute BG"),
-            layout: &segment_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: interpolated_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: stroke_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: stroke_info_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: params_buffer.as_entire_binding(),
-                },
-            ],
-        });
+        let compute_resources = ComputeResources::new(&device, &config, &camera, &stroke_renderer);
         Ok(Self {
             debug_mode: false,
             debug_point_buffer,   // ← 追加
@@ -532,34 +120,13 @@ impl State {
             config,
             is_surface_configured: false,
             window,
-            diffuse_bind_group,
-            diffuse_texture,
             camera,
-            camera_uniform,
-            camera_buffer,
-            camera_bind_group,
-            camera_controller,
-            is_space_pressed: false,
-            is_dragging: false,
-            last_mouse_pos: None,
+            input,
             strokes: Vec::new(),
             current_stroke: None,
-            stroke_instance_count: 0,
-            stroke_buffer,
-            stroke_pipeline,
-            disc_instance_count: 0,
-            disc_buffer,
-            disc_pipeline,
-            raw_point_buffer,
-            interpolated_buffer,
-            compute_pipeline,
-            compute_bind_group,
-            params_buffer,
-            raw_point_count: 0,
-            stroke_info_buffer,
-            segment_compute_pipeline,
-            segment_compute_bind_group,
-            last_space_press_time: None,
+            stroke_renderer,
+            disc_renderer,
+            compute_resources,
         })
     }
 
@@ -573,28 +140,30 @@ impl State {
     }
 
     fn update(&mut self) {
-        self.camera_controller.update_camera(&mut self.camera);
-        self.camera_uniform.update_view_proj(&self.camera);
+        self.camera
+            .controller
+            .update_camera(&mut self.camera.params);
+        self.camera.uniform.update_view_proj(&self.camera.params);
         self.queue.write_buffer(
-            &self.camera_buffer,
+            &self.camera.buffer,
             0,
-            bytemuck::cast_slice(&[self.camera_uniform]),
+            bytemuck::cast_slice(&[self.camera.uniform]),
         );
 
         // ① InterpPoint形式で生点群を送る（古い[f32;2]のコードは削除）
         self.upload_raw_points();
         self.upload_debug_points(); // ← 追加
-        if self.raw_point_count < 2 {
-            self.stroke_instance_count = 0;
+        if self.compute_resources.raw_point_count < 2 {
+            self.stroke_renderer.instance_count = 0;
             return;
         }
 
         // paramsを更新
         self.queue.write_buffer(
-            &self.params_buffer,
+            &self.compute_resources.params_buffer,
             0,
             bytemuck::cast_slice(&[ComputeParams {
-                point_count: self.raw_point_count,
+                point_count: self.compute_resources.raw_point_count,
                 subdivisions: 8,
             }]),
         );
@@ -610,16 +179,20 @@ impl State {
                 timestamp_writes: None,
             });
             // ① Catmull-Rom補間
-            pass.set_pipeline(&self.compute_pipeline);
-            pass.set_bind_group(0, &self.compute_bind_group, &[]);
-            pass.dispatch_workgroups((self.raw_point_count - 1).div_ceil(64), 1, 1);
+            pass.set_pipeline(&self.compute_resources.compute_pipeline);
+            pass.set_bind_group(0, &self.compute_resources.compute_bind_group, &[]);
+            pass.dispatch_workgroups(
+                (self.compute_resources.raw_point_count - 1).div_ceil(64),
+                1,
+                1,
+            );
 
             // ② SegmentInstance生成
-            let interp_count = self.raw_point_count * 8;
-            pass.set_pipeline(&self.segment_compute_pipeline);
-            pass.set_bind_group(0, &self.segment_compute_bind_group, &[]);
+            let interp_count = self.compute_resources.raw_point_count * 8;
+            pass.set_pipeline(&self.compute_resources.segment_compute_pipeline);
+            pass.set_bind_group(0, &self.compute_resources.segment_compute_bind_group, &[]);
             pass.dispatch_workgroups((interp_count - 1).div_ceil(64), 1, 1);
-            self.stroke_instance_count = interp_count - 1;
+            self.stroke_renderer.instance_count = interp_count - 1;
         }
         self.queue.submit([encoder.finish()]);
     }
@@ -686,24 +259,24 @@ impl State {
 
             if self.debug_mode {
                 if self.debug_point_count > 0 {
-                    render_pass.set_pipeline(&self.disc_pipeline);
-                    render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                    render_pass.set_pipeline(&self.disc_renderer.pipeline);
+                    render_pass.set_bind_group(0, &self.camera.bind_group, &[]);
                     render_pass.set_vertex_buffer(0, self.debug_point_buffer.slice(..));
                     render_pass.draw(0..6, 0..self.debug_point_count);
                 }
             } else {
-                if self.stroke_instance_count > 0 {
-                    render_pass.set_pipeline(&self.stroke_pipeline);
-                    render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-                    render_pass.set_vertex_buffer(0, self.stroke_buffer.slice(..));
-                    render_pass.draw(0..6, 0..self.stroke_instance_count);
+                if self.stroke_renderer.instance_count > 0 {
+                    render_pass.set_pipeline(&self.stroke_renderer.pipeline);
+                    render_pass.set_bind_group(0, &self.camera.bind_group, &[]);
+                    render_pass.set_vertex_buffer(0, self.stroke_renderer.buffer.slice(..));
+                    render_pass.draw(0..6, 0..self.stroke_renderer.instance_count);
                 }
 
-                if self.disc_instance_count > 0 {
-                    render_pass.set_pipeline(&self.disc_pipeline);
-                    render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-                    render_pass.set_vertex_buffer(0, self.disc_buffer.slice(..));
-                    render_pass.draw(0..6, 0..self.disc_instance_count);
+                if self.disc_renderer.instance_count > 0 {
+                    render_pass.set_pipeline(&self.disc_renderer.pipeline);
+                    render_pass.set_bind_group(0, &self.camera.bind_group, &[]);
+                    render_pass.set_vertex_buffer(0, self.disc_renderer.buffer.slice(..));
+                    render_pass.draw(0..6, 0..self.disc_renderer.instance_count);
                 }
             }
         }
@@ -719,31 +292,32 @@ impl State {
         match (code, is_pressed) {
             (KeyCode::Escape, true) => self.debug_mode = !self.debug_mode,
             (KeyCode::Space, true) => {
-                if !self.is_space_pressed {
-                    self.is_space_pressed = true;
+                if !self.input.is_space_pressed {
+                    self.input.is_space_pressed = true;
                     let now = std::time::Instant::now();
                     let is_double = self
+                        .input
                         .last_space_press_time
                         .map(|t| t.elapsed().as_millis() < 300)
                         .unwrap_or(false);
 
                     if is_double {
-                        self.camera.zoom = 1.0;
-                        self.camera_controller.zoom_target = 1.0;
-                        self.camera_controller.zoom_smoother.set_friction(0.1);
-                        self.camera_controller.zoom_smoother.set_target(1.0);
-                        self.last_space_press_time = None;
+                        self.camera.params.zoom = 1.0;
+                        self.camera.controller.zoom_target = 1.0;
+                        self.camera.controller.zoom_smoother.set_friction(0.1);
+                        self.camera.controller.zoom_smoother.set_target(1.0);
+                        self.input.last_space_press_time = None;
                     } else {
-                        self.last_space_press_time = Some(now);
+                        self.input.last_space_press_time = Some(now);
                     }
                 }
             }
             (KeyCode::Space, false) => {
-                self.is_space_pressed = false;
+                self.input.is_space_pressed = false;
             }
 
             _ => {
-                self.camera_controller.handle_key(code, is_pressed);
+                self.camera.controller.handle_key(code, is_pressed);
             }
         }
     }
@@ -751,7 +325,7 @@ impl State {
     fn handle_wheel(&mut self, _event_loop: &ActiveEventLoop, delta: &MouseScrollDelta) {
         match delta {
             MouseScrollDelta::LineDelta(_, y) => {
-                self.camera_controller.handle_wheel(*y > 0.0);
+                self.camera.controller.handle_wheel(*y > 0.0);
             }
             _ => {}
         }
@@ -761,8 +335,9 @@ impl State {
         let size = self.window.inner_size();
         let ndc_x = (sx as f32 / size.width as f32) * 2.0 - 1.0;
         let ndc_y = 1.0 - (sy as f32 / size.height as f32) * 2.0;
-        let wx = ndc_x * self.camera.aspect * self.camera.zoom + self.camera.eye.x;
-        let wy = ndc_y * self.camera.zoom + self.camera.eye.y;
+        let wx =
+            ndc_x * self.camera.params.aspect * self.camera.params.zoom + self.camera.params.eye.x;
+        let wy = ndc_y * self.camera.params.zoom + self.camera.params.eye.y;
         [wx, wy]
     }
     fn rebuild_stroke_buffer(&mut self) {
@@ -807,8 +382,8 @@ impl State {
         }
 
         self.queue
-            .write_buffer(&self.disc_buffer, 0, bytemuck::cast_slice(&discs));
-        self.disc_instance_count = discs.len() as u32;
+            .write_buffer(&self.disc_renderer.buffer, 0, bytemuck::cast_slice(&discs));
+        self.disc_renderer.instance_count = discs.len() as u32;
     }
     fn upload_raw_points(&mut self) {
         let mut points: Vec<InterpPoint> = Vec::new();
@@ -845,11 +420,17 @@ impl State {
             }
         }
 
-        self.queue
-            .write_buffer(&self.raw_point_buffer, 0, bytemuck::cast_slice(&points));
-        self.queue
-            .write_buffer(&self.stroke_info_buffer, 0, bytemuck::cast_slice(&infos));
-        self.raw_point_count = points.len() as u32;
+        self.queue.write_buffer(
+            &self.compute_resources.raw_point_buffer,
+            0,
+            bytemuck::cast_slice(&points),
+        );
+        self.queue.write_buffer(
+            &self.compute_resources.stroke_info_buffer,
+            0,
+            bytemuck::cast_slice(&infos),
+        );
+        self.compute_resources.raw_point_count = points.len() as u32;
     }
 
     fn resample_stroke(points: &[[f32; 2]], interval: f32) -> Vec<[f32; 2]> {
@@ -985,12 +566,12 @@ impl ApplicationHandler<State> for App {
             } => {
                 #[allow(clippy::option_map_unit_fn)]
                 self.state.as_mut().map(|s| {
-                    s.is_dragging = state.is_pressed();
-                    if s.is_dragging {
+                    s.input.is_dragging = state.is_pressed();
+                    if s.input.is_dragging {
                         s.current_stroke = Some(Stroke::new([0.0, 0.0, 0.0, 1.0], 0.00390625));
                         // 0.00390625
                     } else {
-                        s.last_mouse_pos = None;
+                        s.input.last_mouse_pos = None;
 
                         if let Some(st) = s.current_stroke.take() {
                             s.strokes.push(st);
@@ -1002,28 +583,28 @@ impl ApplicationHandler<State> for App {
             WindowEvent::CursorMoved { position, .. } => {
                 if let Some(s) = &mut self.state {
                     let cur = (position.x, position.y);
-                    if s.is_dragging && s.is_space_pressed {
-                        if let Some((lx, ly)) = s.last_mouse_pos {
+                    if s.input.is_dragging && s.input.is_space_pressed {
+                        if let Some((lx, ly)) = s.input.last_mouse_pos {
                             let dx = cur.0 - lx;
                             let dy = cur.1 - ly;
                             let win = s.window.inner_size();
-                            let zoom = s.camera.zoom;
-                            s.camera_controller.handle_mouse_drag(
+                            let zoom = s.camera.params.zoom;
+                            s.camera.controller.handle_mouse_drag(
                                 dx,
                                 dy,
                                 (win.width, win.height),
                                 zoom,
-                                &mut s.camera,
+                                &mut s.camera.params,
                             );
                         }
-                    } else if s.is_dragging {
+                    } else if s.input.is_dragging {
                         let world = s.screen_to_world(cur.0, cur.1);
                         if let Some(stroke) = &mut s.current_stroke {
                             stroke.add_point(world[0], world[1]);
                             s.rebuild_stroke_buffer();
                         }
                     }
-                    s.last_mouse_pos = Some(cur);
+                    s.input.last_mouse_pos = Some(cur);
                 }
             }
             _ => {}

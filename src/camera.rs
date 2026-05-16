@@ -1,5 +1,68 @@
 use crate::animation::Smoother;
-use winit::{event::*, keyboard::KeyCode};
+use wgpu::util::DeviceExt;
+use winit::keyboard::KeyCode;
+
+pub struct CameraState {
+    pub params: Camera,
+    pub uniform: CameraUniform,
+    pub buffer: wgpu::Buffer,
+    pub bind_group: wgpu::BindGroup,
+    pub bind_group_layout: wgpu::BindGroupLayout,
+    pub controller: CameraController,
+}
+
+impl CameraState {
+    pub fn new(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
+        let params = Camera {
+            eye: (0.0, 0.0, 10.0).into(),
+            target: (0.0, 0.0, 0.0).into(),
+            up: cgmath::Vector3::unit_y(),
+            aspect: config.width as f32 / config.height as f32,
+            zoom: 1.0,
+            znear: 0.1,
+            zfar: 10000.0,
+        };
+        let mut uniform = CameraUniform::new();
+        uniform.update_view_proj(&params);
+
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Camera Buffer"),
+            contents: bytemuck::cast_slice(&[uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+            label: Some("camera_bind_group_layout"),
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+            label: Some("camera_bind_group"),
+        });
+        let controller = CameraController::new(0.2, &params);
+
+        Self {
+            params,
+            uniform,
+            buffer,
+            bind_group,
+            bind_group_layout,
+            controller,
+        }
+    }
+}
 
 pub struct Camera {
     pub eye: cgmath::Point3<f32>,
