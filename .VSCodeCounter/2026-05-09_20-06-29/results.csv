@@ -1,8 +1,0 @@
-"filename", "language", "Rust", "WGSL", "comment", "blank", "total"
-"c:\Users\Reo\Documents\code\note\src\animation.rs", "Rust", 21, 0, 0, 4, 25
-"c:\Users\Reo\Documents\code\note\src\camera.rs", "Rust", 123, 0, 0, 19, 142
-"c:\Users\Reo\Documents\code\note\src\lib.rs", "Rust", 538, 0, 2, 60, 600
-"c:\Users\Reo\Documents\code\note\src\main.rs", "Rust", 3, 0, 0, 1, 4
-"c:\Users\Reo\Documents\code\note\src\shader.wgsl", "WGSL", 0, 43, 0, 6, 49
-"c:\Users\Reo\Documents\code\note\src\texture.rs", "Rust", 73, 0, 0, 8, 81
-"Total", "-", 758, 43, 2, 98, 901
