@@ -38,6 +38,7 @@ pub struct State {
     input: input::InputState,
     strokes: Vec<Stroke>,
     current_stroke: Option<Stroke>,
+    undo_stack: Vec<Stroke>,
     stroke_renderer: StrokeRenderer,
     disc_renderer: DiscRenderer,
     compute_resources: ComputeResources,
@@ -123,6 +124,7 @@ impl State {
             camera,
             input,
             strokes: Vec::new(),
+            undo_stack: Vec::new(),
             current_stroke: None,
             stroke_renderer,
             disc_renderer,
@@ -151,8 +153,7 @@ impl State {
         );
 
         // ① InterpPoint形式で生点群を送る（古い[f32;2]のコードは削除）
-        self.upload_raw_points();
-        self.upload_debug_points(); // ← 追加
+        self.upload_points();
         if self.compute_resources.raw_point_count < 2 {
             self.stroke_renderer.instance_count = 0;
             return;
@@ -188,7 +189,7 @@ impl State {
             );
 
             // ② SegmentInstance生成
-            let interp_count = self.compute_resources.raw_point_count * 8;
+            let interp_count = (self.compute_resources.raw_point_count - 1) * 8 + 1;
             pass.set_pipeline(&self.compute_resources.segment_compute_pipeline);
             pass.set_bind_group(0, &self.compute_resources.segment_compute_bind_group, &[]);
             pass.dispatch_workgroups((interp_count - 1).div_ceil(64), 1, 1);
@@ -315,6 +316,42 @@ impl State {
             (KeyCode::Space, false) => {
                 self.input.is_space_pressed = false;
             }
+            (KeyCode::ControlLeft, _) | (KeyCode::ControlRight, _) => {
+                self.input.is_ctrl_pressed = is_pressed;
+            }
+            (KeyCode::ShiftLeft, _) | (KeyCode::ShiftRight, _) => {
+                self.input.is_shift_pressed = is_pressed;
+            }
+            (KeyCode::KeyZ, true) => {
+                if !self.input.is_ctrl_pressed {
+                    return;
+                }
+
+                match self.input.is_shift_pressed {
+                    //Ctrl + Z
+                    false => {
+                        if let Some(stroke) = self.strokes.pop() {
+                            self.undo_stack.push(stroke);
+                            self.queue.write_buffer(
+                                &self.compute_resources.interpolated_buffer,
+                                0,
+                                &vec![
+                                    0u8;
+                                    self.compute_resources.interpolated_buffer.size() as usize
+                                ],
+                            );
+                            self.rebuild_stroke_buffer();
+                        }
+                    }
+                    //Ctrl + Shift + Z
+                    _ => {
+                        if let Some(stroke) = self.undo_stack.pop() {
+                            self.strokes.push(stroke);
+                            self.rebuild_stroke_buffer();
+                        }
+                    }
+                }
+            }
 
             _ => {
                 self.camera.controller.handle_key(code, is_pressed);
@@ -341,6 +378,8 @@ impl State {
         [wx, wy]
     }
     fn rebuild_stroke_buffer(&mut self) {
+        self.upload_points();
+
         // SegmentはComputeがやるのでDiscだけ
         let mut discs: Vec<DiscInstance> = Vec::new();
 
@@ -385,37 +424,43 @@ impl State {
             .write_buffer(&self.disc_renderer.buffer, 0, bytemuck::cast_slice(&discs));
         self.disc_renderer.instance_count = discs.len() as u32;
     }
-    fn upload_raw_points(&mut self) {
+    fn upload_points(&mut self) {
         let mut points: Vec<InterpPoint> = Vec::new();
         let mut infos: Vec<StrokeInfo> = Vec::new();
+        let mut debug_discs: Vec<DiscInstance> = Vec::new();
         let max_points = 500_000usize;
 
         for (id, stroke) in self
             .strokes
             .iter()
             .chain(self.current_stroke.iter())
-            .filter(|s| s.points.len() >= 2) // ← ここでフィルタ
+            .filter(|s| s.points.len() >= 2)
             .enumerate()
         {
             if points.len() >= max_points {
-                break; // これ以上追加しない
+                break;
             }
-            if stroke.points.len() < 2 {
-                continue;
-            }
+
+            let resampled = Self::resample_stroke(&stroke.points, stroke.width * 2.0);
+
             infos.push(StrokeInfo {
                 color: stroke.color,
                 width: stroke.width,
                 _pad: [0.0; 3],
             });
 
-            let resampled = Self::resample_stroke(&stroke.points, stroke.width * 2.0);
-
             for &p in &resampled {
                 points.push(InterpPoint {
                     pos: p,
                     stroke_id: id as u32,
                     _pad: 0,
+                });
+                // ★ 同じ p を debug 用にも積む（resample は1回）
+                debug_discs.push(DiscInstance {
+                    center: p,
+                    color: [1.0, 0.0, 0.0, 0.5],
+                    width: stroke.width * 0.3,
+                    _pad: [0.0],
                 });
             }
         }
@@ -431,6 +476,16 @@ impl State {
             bytemuck::cast_slice(&infos),
         );
         self.compute_resources.raw_point_count = points.len() as u32;
+
+        // debug_mode のときだけ GPU に送る
+        if self.debug_mode {
+            self.queue.write_buffer(
+                &self.debug_point_buffer,
+                0,
+                bytemuck::cast_slice(&debug_discs),
+            );
+            self.debug_point_count = debug_discs.len() as u32;
+        }
     }
 
     fn resample_stroke(points: &[[f32; 2]], interval: f32) -> Vec<[f32; 2]> {
@@ -462,28 +517,6 @@ impl State {
 
         result.push(*points.last().unwrap());
         result
-    }
-
-    fn upload_debug_points(&mut self) {
-        let discs: Vec<DiscInstance> = self
-            .strokes
-            .iter()
-            .chain(self.current_stroke.iter())
-            .filter(|s| s.points.len() >= 2)
-            .flat_map(|stroke| {
-                let resampled = Self::resample_stroke(&stroke.points, stroke.width * 2.0);
-                resampled.into_iter().map(move |p| DiscInstance {
-                    center: p,
-                    color: [1.0, 0.0, 0.0, 0.5], // 赤で表示
-                    width: stroke.width * 0.3,
-                    _pad: [0.0],
-                })
-            })
-            .collect();
-
-        self.queue
-            .write_buffer(&self.debug_point_buffer, 0, bytemuck::cast_slice(&discs));
-        self.debug_point_count = discs.len() as u32;
     }
 }
 
@@ -575,6 +608,7 @@ impl ApplicationHandler<State> for App {
 
                         if let Some(st) = s.current_stroke.take() {
                             s.strokes.push(st);
+                            s.undo_stack.clear();
                             s.rebuild_stroke_buffer();
                         }
                     }

@@ -244,7 +244,7 @@ impl ComputeResources {
         let interpolated_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Interpolated Buffer"),
             size: (std::mem::size_of::<InterpPoint>() * max_points * subdivisions as usize) as u64,
-            usage: wgpu::BufferUsages::STORAGE, // COPY_SRCは不要
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
