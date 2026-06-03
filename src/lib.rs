@@ -1,4 +1,5 @@
-use crate::math::{add2, dot2, normalize2, sub2};
+use crate::bezier_fit::fit_curve;
+use crate::math::{add2, dot2, normalize2, scale2, sub2};
 use crate::renderer::{ComputeParams, InterpPoint, StrokeInfo};
 use crate::renderer::{ComputeResources, DiscRenderer, StrokeRenderer};
 use crate::stroke::DiscInstance;
@@ -17,6 +18,7 @@ use winit::{
 };
 
 mod animation;
+mod bezier_fit;
 mod camera;
 mod input;
 mod math;
@@ -384,7 +386,14 @@ impl State {
         let mut discs: Vec<DiscInstance> = Vec::new();
 
         for stroke in self.strokes.iter().chain(self.current_stroke.iter()) {
-            let pts = &stroke.points;
+            // committed_pointsがあればそこから生成、なければpoints
+            let samples = (16.0 / self.camera.params.zoom).ceil() as usize;
+            let pts = if stroke.committed_points.is_empty() {
+                stroke.points.clone()
+            } else {
+                Self::bezier_to_points(&stroke.committed_points, samples)
+            };
+
             if pts.len() < 2 {
                 continue;
             }
@@ -424,6 +433,7 @@ impl State {
             .write_buffer(&self.disc_renderer.buffer, 0, bytemuck::cast_slice(&discs));
         self.disc_renderer.instance_count = discs.len() as u32;
     }
+
     fn upload_points(&mut self) {
         let mut points: Vec<InterpPoint> = Vec::new();
         let mut infos: Vec<StrokeInfo> = Vec::new();
@@ -441,7 +451,14 @@ impl State {
                 break;
             }
 
-            let resampled = Self::resample_stroke(&stroke.points, stroke.width * 2.0);
+            let samples = (16.0 / self.camera.params.zoom).ceil() as usize;
+            let pts = if stroke.committed_points.is_empty() {
+                stroke.points.clone()
+            } else {
+                Self::bezier_to_points(&stroke.committed_points, samples)
+            };
+
+            let resampled = Self::resample_stroke(&pts, stroke.width * 2.0);
 
             infos.push(StrokeInfo {
                 color: stroke.color,
@@ -517,6 +534,41 @@ impl State {
 
         result.push(*points.last().unwrap());
         result
+    }
+
+    fn bezier_to_points(bezier_points: &[[f32; 2]], samples_per_segment: usize) -> Vec<[f32; 2]> {
+        let mut result = Vec::new();
+        for chunk in bezier_points.chunks(4) {
+            if chunk.len() < 4 {
+                break;
+            }
+            for s in 0..samples_per_segment {
+                let t = s as f32 / samples_per_segment as f32;
+                let p = Self::eval_cubic_bezier(chunk[0], chunk[1], chunk[2], chunk[3], t);
+                result.push(p);
+            }
+        }
+        if let Some(last) = bezier_points.last() {
+            result.push(*last);
+        }
+        result
+    }
+
+    fn eval_cubic_bezier(
+        p0: [f32; 2],
+        p1: [f32; 2],
+        p2: [f32; 2],
+        p3: [f32; 2],
+        t: f32,
+    ) -> [f32; 2] {
+        let s = 1.0 - t;
+        add2(
+            scale2(p0, s * s * s),
+            add2(
+                scale2(p1, 3.0 * s * s * t),
+                add2(scale2(p2, 3.0 * s * t * t), scale2(p3, t * t * t)),
+            ),
+        )
     }
 }
 
@@ -606,7 +658,9 @@ impl ApplicationHandler<State> for App {
                     } else {
                         s.input.last_mouse_pos = None;
 
-                        if let Some(st) = s.current_stroke.take() {
+                        if let Some(mut st) = s.current_stroke.take() {
+                            let error = (st.width * 0.1) * (st.width * 0.1);
+                            st.committed_points = fit_curve(&st.points, error);
                             s.strokes.push(st);
                             s.undo_stack.clear();
                             s.rebuild_stroke_buffer();

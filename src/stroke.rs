@@ -99,6 +99,7 @@ impl DiscInstance {
 
 pub struct Stroke {
     pub points: Vec<[f32; 2]>, // 制御点列
+    pub committed_points: Vec<[f32; 2]>,
     pub color: [f32; 4],
     pub width: f32,
 }
@@ -107,6 +108,7 @@ impl Stroke {
     pub fn new(color: [f32; 4], width: f32) -> Self {
         Self {
             points: Vec::new(),
+            committed_points: Vec::new(),
             color,
             width,
         }
