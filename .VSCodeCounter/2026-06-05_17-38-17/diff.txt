@@ -1,0 +1,38 @@
+Date : 2026-06-05 17:38:17
+Directory : c:\Users\Reo\Documents\code\note\src
+Total : 13 files,  616 codes, 29 comments, 90 blanks, all 735 lines
+
+Languages
++----------+------------+------------+------------+------------+------------+
+| language | files      | code       | comment    | blank      | total      |
++----------+------------+------------+------------+------------+------------+
+| Rust     |          8 |        569 |         29 |         81 |        679 |
+| WGSL     |          5 |         47 |          0 |          9 |         56 |
++----------+------------+------------+------------+------------+------------+
+
+Directories
++-------------------------------------------------------+------------+------------+------------+------------+------------+
+| path                                                  | files      | code       | comment    | blank      | total      |
++-------------------------------------------------------+------------+------------+------------+------------+------------+
+| .                                                     |         13 |        616 |         29 |         90 |        735 |
++-------------------------------------------------------+------------+------------+------------+------------+------------+
+
+Files
++-------------------------------------------------------+----------+------------+------------+------------+------------+
+| filename                                              | language | code       | comment    | blank      | total      |
++-------------------------------------------------------+----------+------------+------------+------------+------------+
+| c:\Users\Reo\Documents\code\note\src\animation.rs     | Rust     |          3 |          0 |          1 |          4 |
+| c:\Users\Reo\Documents\code\note\src\bezier_fit.rs    | Rust     |        269 |         27 |         34 |        330 |
+| c:\Users\Reo\Documents\code\note\src\camera.rs        | Rust     |         64 |          0 |          3 |         67 |
+| c:\Users\Reo\Documents\code\note\src\catmull_rom.wgsl | WGSL     |          6 |          0 |          0 |          6 |
+| c:\Users\Reo\Documents\code\note\src\cs_bezier.wgsl   | WGSL     |         78 |          0 |         14 |         92 |
+| c:\Users\Reo\Documents\code\note\src\disc.wgsl        | WGSL     |          1 |          0 |          0 |          1 |
+| c:\Users\Reo\Documents\code\note\src\input.rs         | Rust     |         20 |          0 |          2 |         22 |
+| c:\Users\Reo\Documents\code\note\src\lib.rs           | Rust     |       -366 |         -4 |        -11 |       -381 |
+| c:\Users\Reo\Documents\code\note\src\math.rs          | Rust     |         24 |          0 |          6 |         30 |
+| c:\Users\Reo\Documents\code\note\src\renderer.rs      | Rust     |        553 |          6 |         46 |        605 |
+| c:\Users\Reo\Documents\code\note\src\shader.wgsl      | WGSL     |        -43 |          0 |         -6 |        -49 |
+| c:\Users\Reo\Documents\code\note\src\stroke.rs        | Rust     |          2 |          0 |          0 |          2 |
+| c:\Users\Reo\Documents\code\note\src\stroke.wgsl      | WGSL     |          5 |          0 |          1 |          6 |
+| Total                                                 |          |        616 |         29 |         90 |        735 |
++-------------------------------------------------------+----------+------------+------------+------------+------------+

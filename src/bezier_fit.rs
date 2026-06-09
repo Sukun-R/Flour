@@ -18,7 +18,31 @@ pub fn fit_curve(points: &[[f32; 2]], error: f32) -> Vec<[f32; 2]> {
         error,
         &mut result,
     );
-    result
+
+    // result は [p0,p1,p2,p3, p0,p1,p2,p3, ...] の形
+    // 隣接セグメントの p3 と次の p0 は同じ点なので除去
+    // → [p0,p1,p2, p3=p0,p1,p2, p3=p0,p1,p2, p3]
+    let mut deduped = Vec::new();
+    let mut i = 0;
+    while i + 3 < result.len() {
+        deduped.push(result[i]);
+        deduped.push(result[i + 1]);
+        deduped.push(result[i + 2]);
+        // result[i+3] は次のセグメントの result[i+4] と同じはずなので
+        // 最後のセグメントのp3だけ追加
+        if i + 4 >= result.len() {
+            deduped.push(result[i + 3]);
+        }
+        i += 4;
+    }
+    println!(
+        "result.len: {}, deduped.len: {}",
+        result.len(),
+        deduped.len()
+    );
+    // deduped が 3n+1 になってるか確認
+    println!("deduped % 3 = {}", (deduped.len() - 1) % 3);
+    deduped
 }
 
 /// 部分点列 [first..=last] を再帰的にベジェフィッティングする。

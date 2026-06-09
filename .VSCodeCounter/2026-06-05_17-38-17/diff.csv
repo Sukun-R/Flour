@@ -1,0 +1,15 @@
+"filename", "language", "WGSL", "Rust", "comment", "blank", "total"
+"c:\Users\Reo\Documents\code\note\src\animation.rs", "Rust", 0, 3, 0, 1, 4
+"c:\Users\Reo\Documents\code\note\src\bezier_fit.rs", "Rust", 0, 269, 27, 34, 330
+"c:\Users\Reo\Documents\code\note\src\camera.rs", "Rust", 0, 64, 0, 3, 67
+"c:\Users\Reo\Documents\code\note\src\catmull_rom.wgsl", "WGSL", 6, 0, 0, 0, 6
+"c:\Users\Reo\Documents\code\note\src\cs_bezier.wgsl", "WGSL", 78, 0, 0, 14, 92
+"c:\Users\Reo\Documents\code\note\src\disc.wgsl", "WGSL", 1, 0, 0, 0, 1
+"c:\Users\Reo\Documents\code\note\src\input.rs", "Rust", 0, 20, 0, 2, 22
+"c:\Users\Reo\Documents\code\note\src\lib.rs", "Rust", 0, -366, -4, -11, -381
+"c:\Users\Reo\Documents\code\note\src\math.rs", "Rust", 0, 24, 0, 6, 30
+"c:\Users\Reo\Documents\code\note\src\renderer.rs", "Rust", 0, 553, 6, 46, 605
+"c:\Users\Reo\Documents\code\note\src\shader.wgsl", "WGSL", -43, 0, 0, -6, -49
+"c:\Users\Reo\Documents\code\note\src\stroke.rs", "Rust", 0, 2, 0, 0, 2
+"c:\Users\Reo\Documents\code\note\src\stroke.wgsl", "WGSL", 5, 0, 0, 1, 6
+"Total", "-", 47, 569, 29, 90, 735

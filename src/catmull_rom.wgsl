@@ -37,17 +37,21 @@ fn cs_catmull(@builtin(global_invocation_id) id: vec3<u32>) {
     let next_id = raw_points[seg_idx + 1u].stroke_id;
 
     if cur_id != next_id {
-        // 境界をまたぐ補間点をゼロで埋める
         for (var s = 0u; s < sub; s++) {
             out_points[seg_idx * sub + s] = InterpPoint(vec2(0.0), 0xFFFFFFFFu, 0u);
         }
         return;
     }
 
-    let i0 = select(seg_idx, seg_idx - 1u, seg_idx > 0u && raw_points[seg_idx - 1u].stroke_id == cur_id);
+    // アンダーフロー対策
+    let safe_prev = select(0u, seg_idx - 1u, seg_idx > 0u);
+    let i0 = select(seg_idx, safe_prev,
+        seg_idx > 0u && raw_points[safe_prev].stroke_id == cur_id);
     let i1 = seg_idx;
     let i2 = seg_idx + 1u;
-    let i3 = select(seg_idx + 1u, seg_idx + 2u, seg_idx + 2u < n && raw_points[seg_idx + 2u].stroke_id == cur_id);
+    let safe_next2 = select(seg_idx + 1u, seg_idx + 2u, seg_idx + 2u < n);
+    let i3 = select(seg_idx + 1u, safe_next2,
+        seg_idx + 2u < n && raw_points[safe_next2].stroke_id == cur_id);
 
     let p0 = raw_points[i0].pos;
     let p1 = raw_points[i1].pos;
@@ -60,7 +64,10 @@ fn cs_catmull(@builtin(global_invocation_id) id: vec3<u32>) {
         out_points[seg_idx * sub + s] = InterpPoint(pos, cur_id, 0u);
     }
 
-    if seg_idx == n - 2u || (seg_idx + 2u < n && raw_points[seg_idx + 2u].stroke_id != cur_id) {
-        out_points[(seg_idx + 1u) * sub] = InterpPoint(p2, cur_id, 0u);
+    // 末尾の書き込みにサイズチェック追加
+    let last_idx = (seg_idx + 1u) * sub;
+    if (seg_idx == n - 2u || (seg_idx + 2u < n && raw_points[safe_next2].stroke_id != cur_id))
+        && last_idx < arrayLength(&out_points) {
+        out_points[last_idx] = InterpPoint(p2, cur_id, 0u);
     }
 }

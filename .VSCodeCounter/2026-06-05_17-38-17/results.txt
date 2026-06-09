@@ -1,0 +1,42 @@
+Date : 2026-06-05 17:38:17
+Directory : c:\Users\Reo\Documents\code\note\src
+Total : 16 files,  2299 codes, 52 comments, 286 blanks, all 2637 lines
+
+Languages
++--------------------+------------+------------+------------+------------+------------+
+| language           | files      | code       | comment    | blank      | total      |
++--------------------+------------+------------+------------+------------+------------+
+| Rust               |         10 |      1,972 |         52 |        227 |      2,251 |
+| WGSL               |          5 |        316 |          0 |         59 |        375 |
+| JSON with Comments |          1 |         11 |          0 |          0 |         11 |
++--------------------+------------+------------+------------+------------+------------+
+
+Directories
++-------------------------------------------------------+------------+------------+------------+------------+------------+
+| path                                                  | files      | code       | comment    | blank      | total      |
++-------------------------------------------------------+------------+------------+------------+------------+------------+
+| .                                                     |         16 |      2,299 |         52 |        286 |      2,637 |
++-------------------------------------------------------+------------+------------+------------+------------+------------+
+
+Files
++-------------------------------------------------------+--------------------+------------+------------+------------+------------+
+| filename                                              | language           | code       | comment    | blank      | total      |
++-------------------------------------------------------+--------------------+------------+------------+------------+------------+
+| c:\Users\Reo\Documents\code\note\src\animation.rs     | Rust               |         24 |          0 |          5 |         29 |
+| c:\Users\Reo\Documents\code\note\src\bezier_fit.rs    | Rust               |        269 |         27 |         34 |        330 |
+| c:\Users\Reo\Documents\code\note\src\camera.rs        | Rust               |        199 |          0 |         26 |        225 |
+| c:\Users\Reo\Documents\code\note\src\catmull_rom.wgsl | WGSL               |         54 |          0 |         12 |         66 |
+| c:\Users\Reo\Documents\code\note\src\cs_bezier.wgsl   | WGSL               |         78 |          0 |         14 |         92 |
+| c:\Users\Reo\Documents\code\note\src\cs_segment.wgsl  | WGSL               |         60 |          0 |         13 |         73 |
+| c:\Users\Reo\Documents\code\note\src\disc.wgsl        | WGSL               |         43 |          0 |          6 |         49 |
+| c:\Users\Reo\Documents\code\note\src\input.rs         | Rust               |         20 |          0 |          2 |         22 |
+| c:\Users\Reo\Documents\code\note\src\launch.json      | JSON with Comments |         11 |          0 |          0 |         11 |
+| c:\Users\Reo\Documents\code\note\src\lib.rs           | Rust               |        694 |         10 |         90 |        794 |
+| c:\Users\Reo\Documents\code\note\src\main.rs          | Rust               |          3 |          0 |          1 |          4 |
+| c:\Users\Reo\Documents\code\note\src\math.rs          | Rust               |         24 |          0 |          6 |         30 |
+| c:\Users\Reo\Documents\code\note\src\renderer.rs      | Rust               |        553 |          6 |         46 |        605 |
+| c:\Users\Reo\Documents\code\note\src\stroke.rs        | Rust               |        113 |          9 |          9 |        131 |
+| c:\Users\Reo\Documents\code\note\src\stroke.wgsl      | WGSL               |         81 |          0 |         14 |         95 |
+| c:\Users\Reo\Documents\code\note\src\texture.rs       | Rust               |         73 |          0 |          8 |         81 |
+| Total                                                 |                    |      2,299 |         52 |        286 |      2,637 |
++-------------------------------------------------------+--------------------+------------+------------+------------+------------+

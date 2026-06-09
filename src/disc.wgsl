@@ -40,7 +40,8 @@ fn vs_disc(@builtin(vertex_index) vid: u32, inst: DiscInstance) -> VertexOutput 
 @fragment
 fn fs_disc(in: VertexOutput) -> @location(0) vec4<f32> {
     let d = length(in.uv);
-    let alpha = 1.0 - smoothstep(0.9, 1.0, d);
+    let fw = fwidth(d);
+    let alpha = 1.0 - smoothstep(1.0 - fw, 1.0, d);
     if alpha <= 0.0 {
         discard;
     }

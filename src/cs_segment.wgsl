@@ -40,7 +40,6 @@ fn cs_segment(@builtin(global_invocation_id) id: vec3<u32>) {
     let cur = interp_points[i];
     let nxt = interp_points[i + 1u];
 
-    // ストローク境界はスキップ
     if cur.stroke_id == 0xFFFFFFFFu || cur.stroke_id != nxt.stroke_id {
         out_segments[i] = SegmentInstance(
             vec2(0.0), vec2(0.0), vec2(0.0), vec2(0.0),
@@ -51,15 +50,15 @@ fn cs_segment(@builtin(global_invocation_id) id: vec3<u32>) {
 
     let info = stroke_infos[cur.stroke_id];
 
-    let prev_idx = select(i, i - 1u, i > 0u);
-    let next_idx = select(i + 1u, i + 2u, i + 2u < n);
+    // アンダーフロー対策
+    let safe_prev_idx = select(0u, i - 1u, i > 0u);
+    let safe_next_idx = select(i + 1u, i + 2u, i + 2u < n);
 
-    // 前後の点（境界をまたがない）
-    let use_prev = i > 0u && interp_points[prev_idx].stroke_id == cur.stroke_id;
-    let prev_pos = select(cur.pos, interp_points[prev_idx].pos, use_prev);
+    let use_prev = i > 0u && interp_points[safe_prev_idx].stroke_id == cur.stroke_id;
+    let prev_pos = select(cur.pos, interp_points[safe_prev_idx].pos, use_prev);
 
-    let use_next = i + 2u < n && interp_points[next_idx].stroke_id == cur.stroke_id;
-    let next_pos = select(nxt.pos, interp_points[next_idx].pos, use_next);
+    let use_next = i + 2u < n && interp_points[safe_next_idx].stroke_id == cur.stroke_id;
+    let next_pos = select(nxt.pos, interp_points[safe_next_idx].pos, use_next);
 
     out_segments[i] = SegmentInstance(
         prev_pos,

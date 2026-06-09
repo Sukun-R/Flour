@@ -33,7 +33,7 @@ impl CameraState {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -98,6 +98,8 @@ impl Camera {
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraUniform {
     view_proj: [[f32; 4]; 4],
+    zoom: f32,
+    _pad: [f32; 3],
 }
 
 impl CameraUniform {
@@ -105,6 +107,8 @@ impl CameraUniform {
         use cgmath::SquareMatrix;
         Self {
             view_proj: cgmath::Matrix4::identity().into(),
+            zoom: 1.0,
+            _pad: [0.0; 3],
         }
     }
 

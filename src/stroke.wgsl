@@ -89,17 +89,7 @@ fn vs_stroke(
 @fragment
 fn fs_stroke(in: VertexOutput) -> @location(0) vec4<f32> {
     let d = abs(in.uv.y);
-    let alpha = 1.0 - smoothstep(0.8, 1.0, d);
+    let fw = fwidth(d);
+    let alpha = 1.0 - smoothstep(1.0 - fw, 1.0, d);
     return vec4<f32>(in.color.rgb, in.color.a * alpha);
 }
-/*
-@fragment
-fn fs_stroke(in: VertexOutput) -> @location(0) vec4<f32> {
-    // 中心付近だけ描画（点として表示）
-    let d = length(in.uv - vec2(0.5, 0.0));
-    if d > 0.1 {
-        discard;
-    }
-    return vec4<f32>(in.color.rgb, 1.0);
-}
-    */

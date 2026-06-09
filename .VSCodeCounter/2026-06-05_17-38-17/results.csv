@@ -1,0 +1,18 @@
+"filename", "language", "WGSL", "Rust", "JSON with Comments", "comment", "blank", "total"
+"c:\Users\Reo\Documents\code\note\src\animation.rs", "Rust", 0, 24, 0, 0, 5, 29
+"c:\Users\Reo\Documents\code\note\src\bezier_fit.rs", "Rust", 0, 269, 0, 27, 34, 330
+"c:\Users\Reo\Documents\code\note\src\camera.rs", "Rust", 0, 199, 0, 0, 26, 225
+"c:\Users\Reo\Documents\code\note\src\catmull_rom.wgsl", "WGSL", 54, 0, 0, 0, 12, 66
+"c:\Users\Reo\Documents\code\note\src\cs_bezier.wgsl", "WGSL", 78, 0, 0, 0, 14, 92
+"c:\Users\Reo\Documents\code\note\src\cs_segment.wgsl", "WGSL", 60, 0, 0, 0, 13, 73
+"c:\Users\Reo\Documents\code\note\src\disc.wgsl", "WGSL", 43, 0, 0, 0, 6, 49
+"c:\Users\Reo\Documents\code\note\src\input.rs", "Rust", 0, 20, 0, 0, 2, 22
+"c:\Users\Reo\Documents\code\note\src\launch.json", "JSON with Comments", 0, 0, 11, 0, 0, 11
+"c:\Users\Reo\Documents\code\note\src\lib.rs", "Rust", 0, 694, 0, 10, 90, 794
+"c:\Users\Reo\Documents\code\note\src\main.rs", "Rust", 0, 3, 0, 0, 1, 4
+"c:\Users\Reo\Documents\code\note\src\math.rs", "Rust", 0, 24, 0, 0, 6, 30
+"c:\Users\Reo\Documents\code\note\src\renderer.rs", "Rust", 0, 553, 0, 6, 46, 605
+"c:\Users\Reo\Documents\code\note\src\stroke.rs", "Rust", 0, 113, 0, 9, 9, 131
+"c:\Users\Reo\Documents\code\note\src\stroke.wgsl", "WGSL", 81, 0, 0, 0, 14, 95
+"c:\Users\Reo\Documents\code\note\src\texture.rs", "Rust", 0, 73, 0, 0, 8, 81
+"Total", "-", 316, 1972, 11, 52, 286, 2637
