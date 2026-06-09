@@ -58,6 +58,9 @@ fn fit_cubic(
 ) {
     let n_pts = last - first + 1;
 
+    if dist2(points[first], points[last]) < 0.00001 {
+        return;
+    }
     // 2点だけの場合は端点接線から制御点をヒューリスティックに決める
     if n_pts == 2 {
         let dist = dist2(points[first], points[last]) / 3.0;
@@ -96,6 +99,11 @@ fn fit_cubic(
                 return;
             }
         }
+    }
+
+    if split_point == first || split_point == last {
+        result.extend_from_slice(&bezier);
+        return;
     }
 
     // それでも誤差が大きければ最大誤差点で分割して再帰

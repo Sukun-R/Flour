@@ -163,31 +163,22 @@ impl State {
             bytemuck::cast_slice(&[self.camera.uniform]),
         );
 
-        // ① InterpPoint形式で生点群を送る（古い[f32;2]のコードは削除）
         self.upload_points();
 
-        if self.bezier_compute.segment_count > 0 {
-            let mut encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Bezier Compute Encoder"),
-                });
-            {
-                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("Bezier Compute"),
-                    timestamp_writes: None,
-                });
-                pass.set_pipeline(&self.bezier_compute.compute_pipeline);
-                pass.set_bind_group(0, &self.bezier_compute.compute_bind_group, &[]);
-                pass.dispatch_workgroups((self.bezier_renderer.instance_count).div_ceil(64), 1, 1);
-            }
-            self.queue.submit([encoder.finish()]);
-        }
-
-        if self.compute_resources.raw_point_count < 2 {
-            self.stroke_renderer.instance_count = 0;
-            return;
-        }
+        // write_buffer は encoder の前に
+        let interp_count = if self.compute_resources.raw_point_count >= 2 {
+            self.queue.write_buffer(
+                &self.compute_resources.params_buffer,
+                0,
+                bytemuck::cast_slice(&[ComputeParams {
+                    point_count: self.compute_resources.raw_point_count,
+                    subdivisions: 8,
+                }]),
+            );
+            (self.compute_resources.raw_point_count - 1) * 8 + 1
+        } else {
+            0
+        };
 
         let mut encoder = self
             .device
@@ -196,24 +187,33 @@ impl State {
             });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Catmull-Rom"),
+                label: Some("Compute Pass"),
                 timestamp_writes: None,
             });
-            // ① Catmull-Rom補間
-            pass.set_pipeline(&self.compute_resources.compute_pipeline);
-            pass.set_bind_group(0, &self.compute_resources.compute_bind_group, &[]);
-            pass.dispatch_workgroups(
-                (self.compute_resources.raw_point_count - 1).div_ceil(64),
-                1,
-                1,
-            );
 
-            // ② SegmentInstance生成
-            let interp_count = (self.compute_resources.raw_point_count - 1) * 8 + 1;
-            pass.set_pipeline(&self.compute_resources.segment_compute_pipeline);
-            pass.set_bind_group(0, &self.compute_resources.segment_compute_bind_group, &[]);
-            pass.dispatch_workgroups((interp_count - 1).div_ceil(64), 1, 1);
-            self.stroke_renderer.instance_count = interp_count - 1;
+            if self.bezier_compute.segment_count > 0 {
+                pass.set_pipeline(&self.bezier_compute.compute_pipeline);
+                pass.set_bind_group(0, &self.bezier_compute.compute_bind_group, &[]);
+                pass.dispatch_workgroups(self.bezier_renderer.instance_count.div_ceil(64), 1, 1);
+            }
+
+            if interp_count > 0 {
+                pass.set_pipeline(&self.compute_resources.compute_pipeline);
+                pass.set_bind_group(0, &self.compute_resources.compute_bind_group, &[]);
+                pass.dispatch_workgroups(
+                    (self.compute_resources.raw_point_count - 1).div_ceil(64),
+                    1,
+                    1,
+                );
+
+                pass.set_pipeline(&self.compute_resources.segment_compute_pipeline);
+                pass.set_bind_group(0, &self.compute_resources.segment_compute_bind_group, &[]);
+                pass.dispatch_workgroups((interp_count - 1).div_ceil(64), 1, 1);
+
+                self.stroke_renderer.instance_count = interp_count - 1;
+            } else {
+                self.stroke_renderer.instance_count = 0;
+            }
         }
         self.queue.submit([encoder.finish()]);
     }
@@ -500,9 +500,52 @@ impl State {
     fn rebuild_stroke_buffer_drawing(&mut self) {
         self.upload_points();
 
-        // 描画中ストロークのDiscだけ計算
         let mut discs: Vec<DiscInstance> = Vec::new();
 
+        // 確定済みストロークのDiscも含める
+        for stroke in self.strokes.iter() {
+            if stroke.committed_points.len() >= 4 {
+                let first = stroke.committed_points[0];
+                let last = *stroke.committed_points.last().unwrap();
+                discs.push(DiscInstance {
+                    center: first,
+                    color: stroke.color,
+                    width: stroke.width,
+                    _pad: [0.0],
+                });
+                discs.push(DiscInstance {
+                    center: last,
+                    color: stroke.color,
+                    width: stroke.width,
+                    _pad: [0.0],
+                });
+
+                let pts = &stroke.committed_points;
+                let mut i = 0;
+                while i + 3 < pts.len() {
+                    if i + 3 < pts.len() - 1 {
+                        let p = pts[i + 3];
+                        let dir_in = normalize2(sub2(pts[i + 3], pts[i + 2]));
+                        let dir_out = normalize2(sub2(pts[i + 4], pts[i + 3]));
+                        let nor_in = [-dir_in[1], dir_in[0]];
+                        let nor_out = [-dir_out[1], dir_out[0]];
+                        let miter = normalize2(add2(nor_in, nor_out));
+                        let d = dot2(miter, nor_in);
+                        if d > 0.0001 && 1.0 / d > 2.0 {
+                            discs.push(DiscInstance {
+                                center: p,
+                                color: stroke.color,
+                                width: stroke.width,
+                                _pad: [0.0],
+                            });
+                        }
+                    }
+                    i += 3;
+                }
+            }
+        }
+
+        // 描画中ストロークのDisc
         if let Some(stroke) = &self.current_stroke {
             let pts = Self::resample_stroke(&stroke.points, stroke.width * 2.0);
             if pts.len() >= 2 {
@@ -542,6 +585,7 @@ impl State {
             .write_buffer(&self.disc_renderer.buffer, 0, bytemuck::cast_slice(&discs));
         self.disc_renderer.instance_count = discs.len() as u32;
     }
+
     fn upload_points(&mut self) {
         let mut points: Vec<InterpPoint> = Vec::new();
         let mut infos: Vec<StrokeInfo> = Vec::new();
@@ -649,7 +693,11 @@ impl State {
             if stroke.committed_points.len() < 4 {
                 continue;
             }
-
+            println!("committed len: {}", stroke.committed_points.len());
+            println!(
+                "expected segments: {}",
+                (stroke.committed_points.len() - 1) / 3
+            );
             infos.push(StrokeInfo {
                 color: stroke.color,
                 width: stroke.width,
@@ -792,17 +840,24 @@ impl ApplicationHandler<State> for App {
                         s.input.last_mouse_pos = None;
 
                         if let Some(mut st) = s.current_stroke.take() {
-                            let error = (st.width * 0.1) * (st.width * 0.1);
+                            let error = (st.width * 0.001) * (st.width * 0.001);
                             st.committed_points = fit_curve(&st.points, error);
                             println!(
-                                "points: {}, committed: {}",
-                                st.points.len(),
-                                st.committed_points.len()
+                                "segments: {}",
+                                (st.committed_points.len().saturating_sub(1)) / 3
                             );
-                            println!(
-                                "committed_points: {:?}",
-                                &st.committed_points[..st.committed_points.len().min(16)]
-                            );
+                            for chunk in (0..st.committed_points.len().saturating_sub(1)).step_by(3)
+                            {
+                                if chunk + 3 >= st.committed_points.len() {
+                                    break;
+                                }
+                                println!(
+                                    "seg {}: {:?} -> {:?}",
+                                    chunk / 3,
+                                    st.committed_points[chunk],
+                                    st.committed_points[chunk + 3]
+                                );
+                            }
                             s.strokes.push(st);
                             s.undo_stack.clear();
                             s.rebuild_stroke_buffer();
